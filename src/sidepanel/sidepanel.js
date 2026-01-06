@@ -19,6 +19,7 @@ const elements = {
   tabStats: document.getElementById('tabStats'),
   newTabBtn: document.getElementById('newTabBtn'),
   collapseAllBtn: document.getElementById('collapseAllBtn'),
+  sessionsBtn: document.getElementById('sessionsBtn'),
 };
 
 // ============ 初始化 ============
@@ -277,6 +278,9 @@ function bindEvents() {
       group.classList.toggle('collapsed');
     });
   });
+  
+  // 会话管理
+  elements.sessionsBtn.addEventListener('click', showSessionsPanel);
   
   // 标签列表点击事件（事件委托）
   elements.tabList.addEventListener('click', handleTabListClick);
@@ -802,6 +806,240 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// ============ 会话管理 ============
+
+async function loadSessions() {
+  const result = await chrome.storage.local.get('sessions');
+  return result.sessions || [];
+}
+
+async function saveSessions(sessions) {
+  await chrome.storage.local.set({ sessions });
+}
+
+async function captureCurrentSession() {
+  const windows = await chrome.windows.getAll({ populate: true });
+  const groups = await chrome.tabGroups.query({});
+  
+  const sessionWindows = [];
+  
+  for (const win of windows) {
+    // 获取该窗口的自定义名称
+    const windowName = windowNames[win.id] || null;
+    
+    // 获取该窗口的所有分组
+    const windowGroups = groups.filter(g => 
+      win.tabs.some(t => t.groupId === g.id)
+    );
+    
+    // 整理分组数据
+    const groupsData = windowGroups.map(g => ({
+      title: g.title || '',
+      color: g.color,
+      tabs: win.tabs
+        .filter(t => t.groupId === g.id)
+        .map(t => ({ url: t.url, title: t.title, pinned: t.pinned }))
+    }));
+    
+    // 未分组的标签
+    const ungroupedTabs = win.tabs
+      .filter(t => t.groupId === -1 || !t.groupId)
+      .map(t => ({ url: t.url, title: t.title, pinned: t.pinned }));
+    
+    sessionWindows.push({
+      name: windowName,
+      groups: groupsData,
+      tabs: ungroupedTabs,
+    });
+  }
+  
+  return {
+    id: Date.now().toString(),
+    name: '',
+    createdAt: new Date().toISOString(),
+    windows: sessionWindows,
+  };
+}
+
+async function saveCurrentSession() {
+  const name = prompt('Enter session name:', `Session ${new Date().toLocaleDateString()}`);
+  if (!name) return;
+  
+  const session = await captureCurrentSession();
+  session.name = name;
+  
+  const sessions = await loadSessions();
+  sessions.unshift(session); // 添加到开头
+  
+  // 最多保存 20 个会话
+  if (sessions.length > 20) {
+    sessions.pop();
+  }
+  
+  await saveSessions(sessions);
+  alert('Session saved!');
+}
+
+async function restoreSession(sessionId) {
+  const sessions = await loadSessions();
+  const session = sessions.find(s => s.id === sessionId);
+  if (!session) return;
+  
+  const confirmRestore = confirm(
+    `Restore session "${session.name}"?\n\n` +
+    `This will open ${session.windows.length} window(s) with all tabs and groups.`
+  );
+  if (!confirmRestore) return;
+  
+  for (const winData of session.windows) {
+    // 创建新窗口
+    const newWindow = await chrome.windows.create({});
+    
+    // 保存窗口名称
+    if (winData.name) {
+      windowNames[newWindow.id] = winData.name;
+    }
+    
+    // 关闭默认创建的空白标签
+    const defaultTab = (await chrome.tabs.query({ windowId: newWindow.id }))[0];
+    
+    // 先创建未分组的标签
+    for (const tabData of winData.tabs) {
+      if (tabData.url && !tabData.url.startsWith('chrome://')) {
+        await chrome.tabs.create({
+          windowId: newWindow.id,
+          url: tabData.url,
+          pinned: tabData.pinned,
+        });
+      }
+    }
+    
+    // 创建分组和分组内的标签
+    for (const groupData of winData.groups) {
+      const tabIds = [];
+      
+      for (const tabData of groupData.tabs) {
+        if (tabData.url && !tabData.url.startsWith('chrome://')) {
+          const tab = await chrome.tabs.create({
+            windowId: newWindow.id,
+            url: tabData.url,
+            pinned: tabData.pinned,
+          });
+          tabIds.push(tab.id);
+        }
+      }
+      
+      if (tabIds.length > 0) {
+        const groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId: newWindow.id } });
+        await chrome.tabGroups.update(groupId, {
+          title: groupData.title,
+          color: groupData.color,
+        });
+      }
+    }
+    
+    // 关闭默认空白标签
+    if (defaultTab) {
+      try {
+        await chrome.tabs.remove(defaultTab.id);
+      } catch (e) {
+        // 可能已经被关闭
+      }
+    }
+  }
+  
+  // 保存窗口名称
+  await chrome.storage.local.set({ windowNames });
+  
+  hideSessionsPanel();
+  alert('Session restored!');
+}
+
+async function deleteSession(sessionId) {
+  if (!confirm('Delete this session?')) return;
+  
+  const sessions = await loadSessions();
+  const filtered = sessions.filter(s => s.id !== sessionId);
+  await saveSessions(filtered);
+  
+  // 刷新面板
+  showSessionsPanel();
+}
+
+async function showSessionsPanel() {
+  // 移除已有面板
+  hideSessionsPanel();
+  
+  const sessions = await loadSessions();
+  
+  const panel = document.createElement('div');
+  panel.className = 'sessions-panel';
+  panel.innerHTML = `
+    <div class="sessions-header">
+      <h2>📚 Sessions</h2>
+      <button class="sessions-close" title="Close">✕</button>
+    </div>
+    <div class="sessions-actions">
+      <button class="btn-save-session">💾 Save Current Session</button>
+    </div>
+    <div class="sessions-list">
+      ${sessions.length === 0 ? '<div class="sessions-empty">No saved sessions</div>' : ''}
+      ${sessions.map(s => `
+        <div class="session-item" data-session-id="${s.id}">
+          <div class="session-info">
+            <div class="session-name">${escapeHtml(s.name)}</div>
+            <div class="session-meta">
+              ${s.windows.length} window(s) · 
+              ${s.windows.reduce((acc, w) => acc + w.tabs.length + w.groups.reduce((a, g) => a + g.tabs.length, 0), 0)} tabs ·
+              ${new Date(s.createdAt).toLocaleDateString()}
+            </div>
+          </div>
+          <div class="session-actions">
+            <button class="btn-restore" title="Restore">▶️</button>
+            <button class="btn-delete" title="Delete">🗑️</button>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+  
+  // 事件处理
+  panel.querySelector('.sessions-close').addEventListener('click', hideSessionsPanel);
+  panel.querySelector('.btn-save-session').addEventListener('click', async () => {
+    await saveCurrentSession();
+    showSessionsPanel(); // 刷新列表
+  });
+  
+  panel.querySelectorAll('.btn-restore').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const sessionId = e.target.closest('.session-item').dataset.sessionId;
+      restoreSession(sessionId);
+    });
+  });
+  
+  panel.querySelectorAll('.btn-delete').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const sessionId = e.target.closest('.session-item').dataset.sessionId;
+      deleteSession(sessionId);
+    });
+  });
+  
+  // 点击外部关闭
+  const overlay = document.createElement('div');
+  overlay.className = 'sessions-overlay';
+  overlay.addEventListener('click', hideSessionsPanel);
+  
+  document.body.appendChild(overlay);
+  document.body.appendChild(panel);
+}
+
+function hideSessionsPanel() {
+  const panel = document.querySelector('.sessions-panel');
+  const overlay = document.querySelector('.sessions-overlay');
+  if (panel) panel.remove();
+  if (overlay) overlay.remove();
 }
 
 // ============ 启动 ============
