@@ -20,6 +20,7 @@ const elements = {
   newTabBtn: document.getElementById('newTabBtn'),
   collapseAllBtn: document.getElementById('collapseAllBtn'),
   sessionsBtn: document.getElementById('sessionsBtn'),
+  settingsBtn: document.getElementById('settingsBtn'),
 };
 
 // ============ 初始化 ============
@@ -29,6 +30,7 @@ async function init() {
   await loadTabs();
   bindEvents();
   listenToTabChanges();
+  // 自动保存已移至 Service Worker，使用 Chrome Alarms API
 }
 
 // ============ 窗口名称管理 ============
@@ -282,6 +284,9 @@ function bindEvents() {
   // 会话管理
   elements.sessionsBtn.addEventListener('click', showSessionsPanel);
   
+  // 设置
+  elements.settingsBtn.addEventListener('click', showSettingsPanel);
+  
   // 标签列表点击事件（事件委托）
   elements.tabList.addEventListener('click', handleTabListClick);
   
@@ -431,6 +436,26 @@ function handleTabListClick(e) {
 function handleContextMenu(e) {
   e.preventDefault();
   
+  // 右键窗口标题
+  const windowHeader = e.target.closest('.window-header');
+  if (windowHeader) {
+    const windowSection = windowHeader.closest('.window-section');
+    const windowId = parseInt(windowSection.dataset.windowId);
+    showWindowContextMenu(e.clientX, e.clientY, windowId);
+    return;
+  }
+  
+  // 右键分组标题
+  const groupHeader = e.target.closest('.group-header');
+  if (groupHeader) {
+    const groupElement = groupHeader.closest('.tab-group');
+    const groupId = parseInt(groupElement.dataset.groupId);
+    const windowId = parseInt(groupElement.closest('.window-section').dataset.windowId);
+    showGroupContextMenu(e.clientX, e.clientY, groupId, windowId);
+    return;
+  }
+  
+  // 右键标签
   const tabItem = e.target.closest('.tab-item');
   if (!tabItem) return;
   
@@ -541,6 +566,118 @@ async function handleDrop(e) {
 
 // ============ 右键菜单 ============
 
+// 窗口右键菜单
+function showWindowContextMenu(x, y, windowId) {
+  hideContextMenu();
+  
+  const windowTabs = allTabs.filter(t => t.windowId === windowId);
+  const tabCount = windowTabs.length;
+  
+  const menu = document.createElement('div');
+  menu.className = 'context-menu';
+  menu.innerHTML = `
+    <div class="context-menu-header">Window (${tabCount} tabs)</div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item" data-action="close-window">🗑️ Close Window</div>
+    <div class="context-menu-item" data-action="close-other-windows">Close Other Windows</div>
+  `;
+  
+  menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - 120)}px`;
+  
+  menu.addEventListener('click', async (e) => {
+    const item = e.target.closest('.context-menu-item');
+    if (!item) return;
+    
+    const action = item.dataset.action;
+    
+    switch (action) {
+      case 'close-window':
+        await chrome.windows.remove(windowId);
+        break;
+      case 'close-other-windows':
+        const allWindows = await chrome.windows.getAll();
+        for (const win of allWindows) {
+          if (win.id !== windowId) {
+            await chrome.windows.remove(win.id);
+          }
+        }
+        break;
+    }
+    
+    hideContextMenu();
+  });
+  
+  // 遮罩层
+  const overlay = document.createElement('div');
+  overlay.className = 'context-menu-overlay';
+  overlay.addEventListener('click', hideContextMenu);
+  overlay.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    hideContextMenu();
+  });
+  
+  document.body.appendChild(overlay);
+  document.body.appendChild(menu);
+  
+  menu._cleanup = () => overlay.remove();
+}
+
+// 分组右键菜单
+function showGroupContextMenu(x, y, groupId, windowId) {
+  hideContextMenu();
+  
+  const group = allGroups.find(g => g.id === groupId);
+  const groupTabs = allTabs.filter(t => t.groupId === groupId);
+  const tabCount = groupTabs.length;
+  const groupName = group?.title || 'Group';
+  
+  const menu = document.createElement('div');
+  menu.className = 'context-menu';
+  menu.innerHTML = `
+    <div class="context-menu-header">${escapeHtml(groupName)} (${tabCount} tabs)</div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item" data-action="ungroup">📂 Ungroup</div>
+    <div class="context-menu-item" data-action="close-group">🗑️ Close Group</div>
+  `;
+  
+  menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - 120)}px`;
+  
+  menu.addEventListener('click', async (e) => {
+    const item = e.target.closest('.context-menu-item');
+    if (!item) return;
+    
+    const action = item.dataset.action;
+    
+    switch (action) {
+      case 'ungroup':
+        await chrome.tabs.ungroup(groupTabs.map(t => t.id));
+        break;
+      case 'close-group':
+        await chrome.tabs.remove(groupTabs.map(t => t.id));
+        break;
+    }
+    
+    hideContextMenu();
+  });
+  
+  // 遮罩层
+  const overlay = document.createElement('div');
+  overlay.className = 'context-menu-overlay';
+  overlay.addEventListener('click', hideContextMenu);
+  overlay.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    hideContextMenu();
+  });
+  
+  document.body.appendChild(overlay);
+  document.body.appendChild(menu);
+  
+  menu._cleanup = () => overlay.remove();
+}
+
+// 标签右键菜单
 function showContextMenu(x, y, tab) {
   // 移除已有菜单
   hideContextMenu();
@@ -810,13 +947,13 @@ function escapeHtml(text) {
 
 // ============ 会话管理 ============
 
-async function loadSessions() {
-  const result = await chrome.storage.local.get('sessions');
-  return result.sessions || [];
+async function loadSession() {
+  const result = await chrome.storage.local.get('currentSession');
+  return result.currentSession || null;
 }
 
-async function saveSessions(sessions) {
-  await chrome.storage.local.set({ sessions });
+async function saveSession(session) {
+  await chrome.storage.local.set({ currentSession: session });
 }
 
 async function captureCurrentSession() {
@@ -856,43 +993,86 @@ async function captureCurrentSession() {
   }
   
   return {
-    id: Date.now().toString(),
-    name: '',
-    createdAt: new Date().toISOString(),
+    savedAt: new Date().toISOString(),
     windows: sessionWindows,
   };
 }
 
-async function saveCurrentSession() {
-  const name = prompt('Enter session name:', `Session ${new Date().toLocaleDateString()}`);
-  if (!name) return;
-  
+// 手动保存
+async function saveCurrentSession(showAlert = true) {
   const session = await captureCurrentSession();
-  session.name = name;
-  
-  const sessions = await loadSessions();
-  sessions.unshift(session); // 添加到开头
-  
-  // 最多保存 20 个会话
-  if (sessions.length > 20) {
-    sessions.pop();
+  await saveSession(session);
+  if (showAlert) {
+    showToast('Session saved!');
   }
-  
-  await saveSessions(sessions);
-  alert('Session saved!');
+  console.log('[Session] Saved at', session.savedAt);
 }
 
-async function restoreSession(sessionId) {
-  const sessions = await loadSessions();
-  const session = sessions.find(s => s.id === sessionId);
-  if (!session) return;
+// 显示简单提示（不用 alert 阻塞）
+function showToast(message) {
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 2000);
+}
+
+async function restoreSession(replaceMode = false) {
+  const session = await loadSession();
+  if (!session) {
+    alert('No saved session found.');
+    return;
+  }
   
-  const confirmRestore = confirm(
-    `Restore session "${session.name}"?\n\n` +
-    `This will open ${session.windows.length} window(s) with all tabs and groups.`
-  );
-  if (!confirmRestore) return;
+  const tabCount = session.windows.reduce((acc, w) => 
+    acc + w.tabs.length + w.groups.reduce((a, g) => a + g.tabs.length, 0), 0);
   
+  if (replaceMode) {
+    // 替换模式：关闭所有现有窗口，恢复保存的会话
+    const confirmReplace = confirm(
+      `⚠️ Replace current session?\n\n` +
+      `This will CLOSE all current windows and restore:\n` +
+      `${session.windows.length} window(s), ${tabCount} tabs\n\n` +
+      `Saved: ${new Date(session.savedAt).toLocaleString()}`
+    );
+    if (!confirmReplace) return;
+    
+    // 获取当前所有窗口
+    const currentWindows = await chrome.windows.getAll();
+    
+    // 先创建恢复的窗口（至少要有一个窗口存在）
+    await createSessionWindows(session);
+    
+    // 关闭旧窗口
+    for (const win of currentWindows) {
+      try {
+        await chrome.windows.remove(win.id);
+      } catch (e) {
+        // 可能已关闭
+      }
+    }
+  } else {
+    // 追加模式：在新窗口中打开
+    const confirmRestore = confirm(
+      `Open saved session in NEW windows?\n\n` +
+      `${session.windows.length} window(s), ${tabCount} tabs\n` +
+      `Saved: ${new Date(session.savedAt).toLocaleString()}\n\n` +
+      `(Current windows will remain open)`
+    );
+    if (!confirmRestore) return;
+    
+    await createSessionWindows(session);
+  }
+  
+  // 保存窗口名称
+  await chrome.storage.local.set({ windowNames });
+  
+  hideSessionsPanel();
+  showToast('Session restored!');
+}
+
+// 创建会话中的窗口和标签
+async function createSessionWindows(session) {
   for (const winData of session.windows) {
     // 创建新窗口
     const newWindow = await chrome.windows.create({});
@@ -949,59 +1129,108 @@ async function restoreSession(sessionId) {
       }
     }
   }
-  
-  // 保存窗口名称
-  await chrome.storage.local.set({ windowNames });
-  
-  hideSessionsPanel();
-  alert('Session restored!');
 }
 
-async function deleteSession(sessionId) {
-  if (!confirm('Delete this session?')) return;
+// 导出会话为 JSON 文件
+async function exportSession() {
+  const session = await loadSession();
+  if (!session) {
+    alert('No saved session to export.');
+    return;
+  }
   
-  const sessions = await loadSessions();
-  const filtered = sessions.filter(s => s.id !== sessionId);
-  await saveSessions(filtered);
+  const json = JSON.stringify(session, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
   
-  // 刷新面板
-  showSessionsPanel();
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `session_${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  
+  URL.revokeObjectURL(url);
+  showToast('Session exported!');
+}
+
+// 导入会话
+async function importSession() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json';
+  
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    try {
+      const text = await file.text();
+      const session = JSON.parse(text);
+      
+      // 验证基本结构
+      if (!session.windows || !Array.isArray(session.windows)) {
+        throw new Error('Invalid session format');
+      }
+      
+      session.savedAt = new Date().toISOString(); // 更新保存时间
+      await saveSession(session);
+      showToast('Session imported!');
+      showSessionsPanel(); // 刷新
+    } catch (err) {
+      alert('Failed to import: ' + err.message);
+    }
+  };
+  
+  input.click();
 }
 
 async function showSessionsPanel() {
   // 移除已有面板
   hideSessionsPanel();
   
-  const sessions = await loadSessions();
+  const session = await loadSession();
+  
+  let sessionInfo = '';
+  if (session) {
+    const tabCount = session.windows.reduce((acc, w) => 
+      acc + w.tabs.length + w.groups.reduce((a, g) => a + g.tabs.length, 0), 0);
+    sessionInfo = `
+      <div class="session-item">
+        <div class="session-info">
+          <div class="session-name">Latest Checkpoint</div>
+          <div class="session-meta">
+            ${session.windows.length} window(s) · ${tabCount} tabs<br>
+            Saved: ${new Date(session.savedAt).toLocaleString()}
+          </div>
+        </div>
+      </div>
+      <div class="session-restore-actions">
+        <button class="btn-restore-replace" title="Close current windows and restore">🔄 Replace</button>
+        <button class="btn-restore-add" title="Open in new windows">➕ Add</button>
+      </div>
+    `;
+  } else {
+    sessionInfo = '<div class="sessions-empty">No saved session yet</div>';
+  }
   
   const panel = document.createElement('div');
   panel.className = 'sessions-panel';
   panel.innerHTML = `
     <div class="sessions-header">
-      <h2>📚 Sessions</h2>
+      <h2>📚 Session</h2>
       <button class="sessions-close" title="Close">✕</button>
     </div>
     <div class="sessions-actions">
-      <button class="btn-save-session">💾 Save Current Session</button>
+      <button class="btn-save-session">💾 Save Now</button>
     </div>
     <div class="sessions-list">
-      ${sessions.length === 0 ? '<div class="sessions-empty">No saved sessions</div>' : ''}
-      ${sessions.map(s => `
-        <div class="session-item" data-session-id="${s.id}">
-          <div class="session-info">
-            <div class="session-name">${escapeHtml(s.name)}</div>
-            <div class="session-meta">
-              ${s.windows.length} window(s) · 
-              ${s.windows.reduce((acc, w) => acc + w.tabs.length + w.groups.reduce((a, g) => a + g.tabs.length, 0), 0)} tabs ·
-              ${new Date(s.createdAt).toLocaleDateString()}
-            </div>
-          </div>
-          <div class="session-actions">
-            <button class="btn-restore" title="Restore">▶️</button>
-            <button class="btn-delete" title="Delete">🗑️</button>
-          </div>
-        </div>
-      `).join('')}
+      ${sessionInfo}
+    </div>
+    <div class="sessions-footer">
+      <button class="btn-export">📤 Export JSON</button>
+      <button class="btn-import">📥 Import JSON</button>
+    </div>
+    <div class="sessions-note">
+      Auto-saves every 10 minutes
     </div>
   `;
   
@@ -1009,22 +1238,23 @@ async function showSessionsPanel() {
   panel.querySelector('.sessions-close').addEventListener('click', hideSessionsPanel);
   panel.querySelector('.btn-save-session').addEventListener('click', async () => {
     await saveCurrentSession();
-    showSessionsPanel(); // 刷新列表
+    showSessionsPanel(); // 刷新
   });
   
-  panel.querySelectorAll('.btn-restore').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const sessionId = e.target.closest('.session-item').dataset.sessionId;
-      restoreSession(sessionId);
-    });
-  });
+  // 替换恢复（关闭当前窗口）
+  const replaceBtn = panel.querySelector('.btn-restore-replace');
+  if (replaceBtn) {
+    replaceBtn.addEventListener('click', () => restoreSession(true));
+  }
   
-  panel.querySelectorAll('.btn-delete').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      const sessionId = e.target.closest('.session-item').dataset.sessionId;
-      deleteSession(sessionId);
-    });
-  });
+  // 追加恢复（新窗口打开）
+  const addBtn = panel.querySelector('.btn-restore-add');
+  if (addBtn) {
+    addBtn.addEventListener('click', () => restoreSession(false));
+  }
+  
+  panel.querySelector('.btn-export').addEventListener('click', exportSession);
+  panel.querySelector('.btn-import').addEventListener('click', importSession);
   
   // 点击外部关闭
   const overlay = document.createElement('div');
@@ -1038,6 +1268,63 @@ async function showSessionsPanel() {
 function hideSessionsPanel() {
   const panel = document.querySelector('.sessions-panel');
   const overlay = document.querySelector('.sessions-overlay');
+  if (panel) panel.remove();
+  if (overlay) overlay.remove();
+}
+
+// ============ 设置面板 ============
+
+async function showSettingsPanel() {
+  hideSettingsPanel();
+  
+  // 获取当前快捷键配置
+  const commands = await chrome.commands.getAll();
+  const actionCmd = commands.find(c => c.name === '_execute_action');
+  const currentShortcut = actionCmd?.shortcut || 'Not set';
+  
+  const panel = document.createElement('div');
+  panel.className = 'settings-panel';
+  panel.innerHTML = `
+    <div class="settings-header">
+      <h2>⚙️ Settings</h2>
+      <button class="settings-close" title="Close">✕</button>
+    </div>
+    <div class="settings-content">
+      <div class="settings-section">
+        <h3>⌨️ Keyboard Shortcuts</h3>
+        <div class="shortcut-item">
+          <div class="shortcut-info">
+            <div class="shortcut-name">Open Sidebar</div>
+            <div class="shortcut-desc">打开侧边栏</div>
+          </div>
+          <div class="shortcut-key">${escapeHtml(currentShortcut)}</div>
+        </div>
+        <div class="shortcut-note">
+          <button class="btn-customize-shortcuts">🔧 Customize Shortcuts</button>
+          <p>再按一次可关闭侧边栏</p>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  // 事件处理
+  panel.querySelector('.settings-close').addEventListener('click', hideSettingsPanel);
+  panel.querySelector('.btn-customize-shortcuts').addEventListener('click', () => {
+    chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+  });
+  
+  // 遮罩
+  const overlay = document.createElement('div');
+  overlay.className = 'settings-overlay';
+  overlay.addEventListener('click', hideSettingsPanel);
+  
+  document.body.appendChild(overlay);
+  document.body.appendChild(panel);
+}
+
+function hideSettingsPanel() {
+  const panel = document.querySelector('.settings-panel');
+  const overlay = document.querySelector('.settings-overlay');
   if (panel) panel.remove();
   if (overlay) overlay.remove();
 }
