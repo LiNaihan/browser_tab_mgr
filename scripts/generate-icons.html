@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Generate Extension Icons</title>
+  <style>
+    body { font-family: system-ui; padding: 40px; background: #1e1e1e; color: #fff; }
+    canvas { border: 1px solid #444; margin: 10px; }
+    button { padding: 10px 20px; margin: 10px; cursor: pointer; }
+    .icons { display: flex; gap: 20px; align-items: end; margin: 20px 0; }
+    a { color: #0078d4; }
+  </style>
+</head>
+<body>
+  <h1>🎨 Generate Extension Icons</h1>
+  <p>Click to download each icon, then place them in the <code>icons/</code> folder.</p>
+  
+  <div class="icons">
+    <div>
+      <canvas id="icon16" width="16" height="16"></canvas>
+      <br><button onclick="download('icon16', 16)">Download 16x16</button>
+    </div>
+    <div>
+      <canvas id="icon48" width="48" height="48"></canvas>
+      <br><button onclick="download('icon48', 48)">Download 48x48</button>
+    </div>
+    <div>
+      <canvas id="icon128" width="128" height="128"></canvas>
+      <br><button onclick="download('icon128', 128)">Download 128x128</button>
+    </div>
+  </div>
+  
+  <button onclick="downloadAll()">⬇️ Download All</button>
+
+  <script>
+    const sizes = [16, 48, 128];
+    
+    function drawIcon(canvas, size) {
+      const ctx = canvas.getContext('2d');
+      const scale = size / 16;
+      
+      // Background
+      ctx.fillStyle = '#0078d4';
+      roundRect(ctx, 0, 0, size, size, 3 * scale);
+      ctx.fill();
+      
+      // Tab lines
+      ctx.fillStyle = 'white';
+      roundRect(ctx, 3 * scale, 4 * scale, 10 * scale, 2 * scale, 1 * scale);
+      ctx.fill();
+      
+      ctx.globalAlpha = 0.7;
+      roundRect(ctx, 3 * scale, 7 * scale, 8 * scale, 2 * scale, 1 * scale);
+      ctx.fill();
+      
+      ctx.globalAlpha = 0.5;
+      roundRect(ctx, 3 * scale, 10 * scale, 6 * scale, 2 * scale, 1 * scale);
+      ctx.fill();
+      
+      ctx.globalAlpha = 1;
+    }
+    
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    }
+    
+    function download(id, size) {
+      const canvas = document.getElementById(id);
+      const link = document.createElement('a');
+      link.download = `icon${size}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    }
+    
+    function downloadAll() {
+      sizes.forEach(size => download(`icon${size}`, size));
+    }
+    
+    // Draw all icons on load
+    sizes.forEach(size => {
+      const canvas = document.getElementById(`icon${size}`);
+      drawIcon(canvas, size);
+    });
+  </script>
+</body>
+</html>
+

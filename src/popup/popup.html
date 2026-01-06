@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Tab Cleaner</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <h1>🧹 Tab Cleaner</h1>
+      <button id="settingsBtn" class="icon-btn" title="Settings">⚙️</button>
+    </header>
+
+    <!-- Stats -->
+    <div class="stats">
+      <div class="stat-item">
+        <span class="stat-value" id="tabCount">-</span>
+        <span class="stat-label">Tabs</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" id="windowCount">-</span>
+        <span class="stat-label">Windows</span>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" id="groupCount">-</span>
+        <span class="stat-label">Groups</span>
+      </div>
+    </div>
+
+    <!-- Main Actions -->
+    <div class="actions">
+      <button id="analyzeBtn" class="btn btn-primary">
+        <span class="btn-icon">✨</span>
+        Analyze with AI
+      </button>
+      <button id="quickGroupBtn" class="btn btn-secondary">
+        <span class="btn-icon">📁</span>
+        Quick Group by Domain
+      </button>
+    </div>
+
+    <!-- Results Section (hidden initially) -->
+    <div id="resultsSection" class="results hidden">
+      <h2>Suggestions</h2>
+      <div id="resultsList" class="results-list">
+        <!-- Dynamic content -->
+      </div>
+      <div class="results-actions">
+        <button id="applyBtn" class="btn btn-primary">Apply All</button>
+        <button id="cancelBtn" class="btn btn-ghost">Cancel</button>
+      </div>
+    </div>
+
+    <!-- Loading State -->
+    <div id="loadingState" class="loading hidden">
+      <div class="spinner"></div>
+      <p>Analyzing your tabs...</p>
+    </div>
+
+    <!-- Error State -->
+    <div id="errorState" class="error hidden">
+      <p id="errorMessage"></p>
+      <button id="retryBtn" class="btn btn-secondary">Retry</button>
+    </div>
+
+    <!-- Settings Panel (hidden initially) -->
+    <div id="settingsPanel" class="settings-panel hidden">
+      <h2>Settings</h2>
+      <div class="setting-group">
+        <label for="llmProvider">LLM Provider</label>
+        <select id="llmProvider">
+          <option value="openai">OpenAI</option>
+          <option value="claude">Claude</option>
+          <option value="local">Local (Ollama)</option>
+        </select>
+      </div>
+      <div class="setting-group">
+        <label for="apiKey">API Key</label>
+        <input type="password" id="apiKey" placeholder="Enter your API key">
+      </div>
+      <div class="setting-group">
+        <label for="model">Model</label>
+        <input type="text" id="model" placeholder="gpt-4o-mini">
+      </div>
+      <div class="settings-actions">
+        <button id="saveSettingsBtn" class="btn btn-primary">Save</button>
+        <button id="closeSettingsBtn" class="btn btn-ghost">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>
+

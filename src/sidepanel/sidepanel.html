@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tab Manager</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="search-box">
+        <span class="search-icon">🔍</span>
+        <input type="text" id="searchInput" placeholder="Search tabs..." autocomplete="off">
+      </div>
+      <div class="header-actions">
+        <button id="collapseAllBtn" class="icon-btn" title="Collapse all groups">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M4 6l4 4 4-4H4z"/>
+          </svg>
+        </button>
+        <button id="newTabBtn" class="icon-btn" title="New tab">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <path d="M8 2v12M2 8h12" stroke="currentColor" stroke-width="2" fill="none"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Tab List -->
+    <main class="tab-list-container">
+      <div id="tabList" class="tab-list">
+        <!-- Tabs will be rendered here -->
+      </div>
+    </main>
+
+    <!-- Footer Stats -->
+    <footer class="footer">
+      <span id="tabStats">0 tabs</span>
+    </footer>
+  </div>
+
+  <script src="sidepanel.js" type="module"></script>
+</body>
+</html>
+
