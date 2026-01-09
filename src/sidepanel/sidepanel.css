@@ -328,6 +328,17 @@ body {
   background: var(--bg-drop);
 }
 
+/* 跨窗口拖放目标高亮 */
+.window-section.window-drop-target {
+  background: var(--bg-drop);
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+.window-section.window-drop-target .window-header {
+  background: var(--accent-hover);
+}
+
 .tab-item.selected {
   background: var(--accent);
   background: rgba(0, 120, 212, 0.3);

@@ -545,14 +545,33 @@ function bindDragEvents() {
     section.addEventListener('drop', handleDrop);
   });
   
-  // 窗口标题栏拖拽排序
+  // 窗口标题栏拖拽排序 + 接收 tab 拖放
   const windowHeaders = document.querySelectorAll('.window-header');
   windowHeaders.forEach(header => {
     header.addEventListener('dragstart', handleWindowDragStart);
     header.addEventListener('dragend', handleWindowDragEnd);
-    header.addEventListener('dragover', handleWindowDragOver);
-    header.addEventListener('dragleave', handleWindowDragLeave);
-    header.addEventListener('drop', handleWindowDrop);
+    header.addEventListener('dragover', (e) => {
+      // 同时处理窗口拖拽和 tab 拖放
+      if (draggedWindow) {
+        handleWindowDragOver(e);
+      } else if (draggedTab) {
+        handleDragOver(e);
+      }
+    });
+    header.addEventListener('dragleave', (e) => {
+      if (draggedWindow) {
+        handleWindowDragLeave(e);
+      } else if (draggedTab) {
+        handleDragLeave(e);
+      }
+    });
+    header.addEventListener('drop', (e) => {
+      if (draggedWindow) {
+        handleWindowDrop(e);
+      } else if (draggedTab) {
+        handleDrop(e);
+      }
+    });
   });
 }
 
@@ -577,18 +596,35 @@ function handleDragOver(e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
   
+  // 清除之前的高亮
+  document.querySelectorAll('.drag-over, .window-drop-target').forEach(el => {
+    el.classList.remove('drag-over', 'window-drop-target');
+  });
+  
   const tabItem = e.target.closest('.tab-item');
-  if (tabItem && tabItem !== dragOverElement) {
-    document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+  const windowSection = e.target.closest('.window-section');
+  
+  if (tabItem) {
     tabItem.classList.add('drag-over');
     dragOverElement = tabItem;
+  } else if (windowSection) {
+    // 高亮整个窗口区域（跨窗口拖动时）
+    const windowId = parseInt(windowSection.dataset.windowId);
+    if (draggedTab && windowId !== draggedTab.windowId) {
+      windowSection.classList.add('window-drop-target');
+    }
   }
 }
 
 function handleDragLeave(e) {
   const tabItem = e.target.closest('.tab-item');
+  const windowSection = e.target.closest('.window-section');
+  
   if (tabItem) {
     tabItem.classList.remove('drag-over');
+  }
+  if (windowSection && !windowSection.contains(e.relatedTarget)) {
+    windowSection.classList.remove('window-drop-target');
   }
 }
 
@@ -599,31 +635,42 @@ async function handleDrop(e) {
   
   const targetTabItem = e.target.closest('.tab-item');
   const windowSection = e.target.closest('.window-section');
+  const windowHeader = e.target.closest('.window-header');
   
-  if (targetTabItem) {
-    // 拖到另一个标签上 - 插入到该位置
-    const targetTabId = parseInt(targetTabItem.dataset.tabId);
-    const targetTab = allTabs.find(t => t.id === targetTabId);
-    
-    if (targetTab && draggedTab.id !== targetTabId) {
+  try {
+    if (targetTabItem) {
+      // 拖到另一个标签上 - 插入到该位置
+      const targetTabId = parseInt(targetTabItem.dataset.tabId);
+      const targetTab = allTabs.find(t => t.id === targetTabId);
+      
+      if (targetTab && draggedTab.id !== targetTabId) {
+        await chrome.tabs.move(draggedTab.id, {
+          windowId: targetTab.windowId,
+          index: targetTab.index,
+        });
+      }
+    } else if (windowHeader) {
+      // 拖到窗口标题栏 - 移动到该窗口开头
+      const windowId = parseInt(windowHeader.dataset.windowId);
       await chrome.tabs.move(draggedTab.id, {
-        windowId: targetTab.windowId,
-        index: targetTab.index,
+        windowId: windowId,
+        index: 0,
       });
-    }
-  } else if (windowSection) {
-    // 拖到窗口区域 - 移动到该窗口末尾
-    const windowId = parseInt(windowSection.closest('.window-section').dataset.windowId);
-    
-    if (windowId !== draggedTab.windowId) {
+    } else if (windowSection) {
+      // 拖到窗口区域 - 移动到该窗口末尾
+      const windowId = parseInt(windowSection.dataset.windowId);
       await chrome.tabs.move(draggedTab.id, {
         windowId: windowId,
         index: -1,
       });
     }
+  } catch (err) {
+    console.error('Failed to move tab:', err);
   }
   
-  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+  document.querySelectorAll('.drag-over, .window-drop-target').forEach(el => {
+    el.classList.remove('drag-over', 'window-drop-target');
+  });
 }
 
 // ============ 窗口拖拽排序 ============
