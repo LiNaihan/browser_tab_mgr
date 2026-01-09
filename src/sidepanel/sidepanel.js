@@ -6,8 +6,10 @@
 let allTabs = [];
 let allGroups = [];
 let windowNames = {}; // 自定义窗口名称
+let windowOrder = []; // 窗口排序顺序
 let searchQuery = '';
 let draggedTab = null;
+let draggedWindow = null; // 拖拽中的窗口
 let dragOverElement = null;
 let selectedTabIds = new Set(); // 多选的标签 ID
 let lastSelectedTabId = null;  // 上次选中的标签（用于 Shift 范围选择）
@@ -30,6 +32,7 @@ async function init() {
   await loadTabs();
   bindEvents();
   listenToTabChanges();
+  setupScrollSync();
   // 自动保存已移至 Service Worker，使用 Chrome Alarms API
 }
 
@@ -37,12 +40,19 @@ async function init() {
 
 async function loadWindowNames() {
   try {
-    const result = await chrome.storage.local.get('windowNames');
+    const result = await chrome.storage.local.get(['windowNames', 'windowOrder']);
     windowNames = result.windowNames || {};
+    windowOrder = result.windowOrder || [];
   } catch (error) {
     console.error('Failed to load window names:', error);
     windowNames = {};
+    windowOrder = [];
   }
+}
+
+async function saveWindowOrder(order) {
+  windowOrder = order;
+  await chrome.storage.local.set({ windowOrder });
 }
 
 async function saveWindowName(windowId, name) {
@@ -84,8 +94,11 @@ function renderTabList() {
   // 按窗口分组
   const tabsByWindow = groupTabsByWindow(filteredTabs);
   
+  // 按保存的顺序排序窗口
+  const sortedWindows = sortWindowsByOrder(tabsByWindow);
+  
   let html = '';
-  for (const [windowId, windowTabs] of tabsByWindow) {
+  for (const [windowId, windowTabs] of sortedWindows) {
     html += renderWindowSection(windowId, windowTabs);
   }
   
@@ -122,8 +135,9 @@ function renderWindowSection(windowId, tabs) {
   
   let html = `
     <div class="window-section" data-window-id="${windowId}">
-      <div class="window-header" data-window-id="${windowId}">
-        <span class="window-icon">🪟</span>
+      <div class="window-header" data-window-id="${windowId}" draggable="true">
+        <span class="window-drag-handle" title="Drag to reorder">⋮⋮</span>
+        <span class="window-collapse-icon">▼</span>
         <span class="window-name" title="Double-click to rename">${escapeHtml(windowLabel)}</span>
         <span class="tab-count">${tabs.length} tabs</span>
       </div>
@@ -237,6 +251,36 @@ function groupTabsByWindow(tabs) {
   }
   
   return map;
+}
+
+function sortWindowsByOrder(tabsByWindow) {
+  const windowIds = Array.from(tabsByWindow.keys());
+  
+  // 如果没有保存的顺序，按原顺序返回
+  if (!windowOrder || windowOrder.length === 0) {
+    return tabsByWindow;
+  }
+  
+  // 按保存的顺序排序
+  windowIds.sort((a, b) => {
+    const indexA = windowOrder.indexOf(a);
+    const indexB = windowOrder.indexOf(b);
+    
+    // 如果窗口不在保存的顺序中，放到最后
+    if (indexA === -1 && indexB === -1) return 0;
+    if (indexA === -1) return 1;
+    if (indexB === -1) return -1;
+    
+    return indexA - indexB;
+  });
+  
+  // 重新构建有序的 Map
+  const sortedMap = new Map();
+  for (const windowId of windowIds) {
+    sortedMap.set(windowId, tabsByWindow.get(windowId));
+  }
+  
+  return sortedMap;
 }
 
 function organizeTabsByGroup(tabs) {
@@ -424,6 +468,14 @@ function handleTabListClick(e) {
     return;
   }
   
+  // 点击窗口头 - 折叠/展开（但不是双击编辑名称时）
+  const windowHeader = e.target.closest('.window-header');
+  if (windowHeader && !e.target.closest('.window-name')) {
+    const windowSection = windowHeader.closest('.window-section');
+    windowSection.classList.toggle('collapsed');
+    return;
+  }
+  
   // 点击组头 - 折叠/展开
   const groupHeader = e.target.closest('.group-header');
   if (groupHeader) {
@@ -491,6 +543,16 @@ function bindDragEvents() {
   windowSections.forEach(section => {
     section.addEventListener('dragover', handleDragOver);
     section.addEventListener('drop', handleDrop);
+  });
+  
+  // 窗口标题栏拖拽排序
+  const windowHeaders = document.querySelectorAll('.window-header');
+  windowHeaders.forEach(header => {
+    header.addEventListener('dragstart', handleWindowDragStart);
+    header.addEventListener('dragend', handleWindowDragEnd);
+    header.addEventListener('dragover', handleWindowDragOver);
+    header.addEventListener('dragleave', handleWindowDragLeave);
+    header.addEventListener('drop', handleWindowDrop);
   });
 }
 
@@ -562,6 +624,106 @@ async function handleDrop(e) {
   }
   
   document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+}
+
+// ============ 窗口拖拽排序 ============
+
+function handleWindowDragStart(e) {
+  // 只从拖拽手柄开始拖拽
+  const dragHandle = e.target.closest('.window-drag-handle');
+  const header = e.target.closest('.window-header');
+  
+  if (!header) return;
+  
+  // 如果点击的是窗口名称区域，不启动拖拽（允许编辑）
+  if (e.target.closest('.window-name')) {
+    e.preventDefault();
+    return;
+  }
+  
+  const windowId = parseInt(header.dataset.windowId);
+  draggedWindow = windowId;
+  
+  const windowSection = header.closest('.window-section');
+  windowSection.classList.add('window-dragging');
+  
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', `window:${windowId}`);
+  
+  // 停止事件冒泡，避免触发 tab 拖拽
+  e.stopPropagation();
+}
+
+function handleWindowDragEnd(e) {
+  if (!draggedWindow) return;
+  
+  document.querySelectorAll('.window-dragging').forEach(el => el.classList.remove('window-dragging'));
+  document.querySelectorAll('.window-drag-over').forEach(el => el.classList.remove('window-drag-over'));
+  draggedWindow = null;
+}
+
+function handleWindowDragOver(e) {
+  if (!draggedWindow) return;
+  
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  
+  const header = e.target.closest('.window-header');
+  if (header) {
+    const targetWindowId = parseInt(header.dataset.windowId);
+    if (targetWindowId !== draggedWindow) {
+      document.querySelectorAll('.window-drag-over').forEach(el => el.classList.remove('window-drag-over'));
+      header.closest('.window-section').classList.add('window-drag-over');
+    }
+  }
+  
+  e.stopPropagation();
+}
+
+function handleWindowDragLeave(e) {
+  if (!draggedWindow) return;
+  
+  const header = e.target.closest('.window-header');
+  if (header) {
+    header.closest('.window-section').classList.remove('window-drag-over');
+  }
+}
+
+async function handleWindowDrop(e) {
+  if (!draggedWindow) return;
+  
+  e.preventDefault();
+  e.stopPropagation();
+  
+  const header = e.target.closest('.window-header');
+  if (!header) return;
+  
+  const targetWindowId = parseInt(header.dataset.windowId);
+  if (targetWindowId === draggedWindow) return;
+  
+  // 获取当前窗口顺序
+  const windowSections = document.querySelectorAll('.window-section');
+  const currentOrder = Array.from(windowSections).map(s => parseInt(s.dataset.windowId));
+  
+  // 找到拖拽窗口和目标窗口的索引
+  const dragIndex = currentOrder.indexOf(draggedWindow);
+  const targetIndex = currentOrder.indexOf(targetWindowId);
+  
+  if (dragIndex === -1 || targetIndex === -1) return;
+  
+  // 移动窗口顺序
+  currentOrder.splice(dragIndex, 1);
+  currentOrder.splice(targetIndex, 0, draggedWindow);
+  
+  // 保存新顺序
+  await saveWindowOrder(currentOrder);
+  
+  // 清理状态
+  document.querySelectorAll('.window-drag-over').forEach(el => el.classList.remove('window-drag-over'));
+  draggedWindow = null;
+  
+  // 重新渲染
+  renderTabList();
 }
 
 // ============ 右键菜单 ============
@@ -704,12 +866,15 @@ function showContextMenu(x, y, tab) {
     `;
   } else {
     // 单选菜单
+    const isInGroup = tab.groupId && tab.groupId !== -1;
     menu.innerHTML = `
       <div class="context-menu-item" data-action="reload">🔄 Reload</div>
       <div class="context-menu-item" data-action="duplicate">📋 Duplicate</div>
       <div class="context-menu-item" data-action="pin">${tab.pinned ? '📌 Unpin' : '📌 Pin'}</div>
       <div class="context-menu-separator"></div>
       <div class="context-menu-item" data-action="create-group">📁 Create Group</div>
+      <div class="context-menu-item" data-action="add-to-group">➕ Add to Group...</div>
+      ${isInGroup ? '<div class="context-menu-item" data-action="remove-from-group">📤 Remove from Group</div>' : ''}
       <div class="context-menu-item" data-action="new-window">🪟 Move to new window</div>
       <div class="context-menu-separator"></div>
       <div class="context-menu-item" data-action="close-others">Close other tabs</div>
@@ -777,8 +942,13 @@ function showContextMenu(x, y, tab) {
         await createTabGroup(selectedIds.length > 0 ? selectedIds : [tab.id]);
         break;
       case 'add-to-group':
-        await showAddToGroupMenu(x, y, selectedIds);
+        // 单选或多选都用 showAddToGroupMenu
+        const tabIdsToGroup = selectedIds.length > 0 ? selectedIds : [tab.id];
+        await showAddToGroupMenu(x, y, tabIdsToGroup);
         return; // 不关闭菜单，显示子菜单
+      case 'remove-from-group':
+        await chrome.tabs.ungroup([tab.id]);
+        break;
     }
     
     selectedTabIds.clear();
@@ -934,6 +1104,22 @@ function listenToTabChanges() {
   chrome.tabGroups.onCreated.addListener(() => loadTabs());
   chrome.tabGroups.onRemoved.addListener(() => loadTabs());
   chrome.tabGroups.onUpdated.addListener(() => loadTabs());
+  
+  // 窗口关闭时清理顺序
+  chrome.windows.onRemoved.addListener(async (windowId) => {
+    // 从顺序列表中移除
+    const index = windowOrder.indexOf(windowId);
+    if (index !== -1) {
+      windowOrder.splice(index, 1);
+      await chrome.storage.local.set({ windowOrder });
+    }
+    // 从名称列表中移除
+    if (windowNames[windowId]) {
+      delete windowNames[windowId];
+      await chrome.storage.local.set({ windowNames });
+    }
+    loadTabs();
+  });
 }
 
 // ============ 工具函数 ============
@@ -1327,6 +1513,46 @@ function hideSettingsPanel() {
   const overlay = document.querySelector('.settings-overlay');
   if (panel) panel.remove();
   if (overlay) overlay.remove();
+}
+
+// ============ 滚动同步 ============
+
+let isScrollSyncing = false; // 防止循环触发
+
+function setupScrollSync() {
+  const container = document.querySelector('.tab-list-container');
+  if (!container) return;
+  
+  // 恢复之前保存的滚动位置
+  chrome.storage.local.get('scrollPosition', (result) => {
+    if (result.scrollPosition !== undefined) {
+      container.scrollTop = result.scrollPosition;
+    }
+  });
+  
+  // 监听滚动事件，保存位置
+  let scrollTimeout;
+  container.addEventListener('scroll', () => {
+    if (isScrollSyncing) return;
+    
+    // 防抖：停止滚动后 100ms 保存
+    clearTimeout(scrollTimeout);
+    scrollTimeout = setTimeout(() => {
+      chrome.storage.local.set({ scrollPosition: container.scrollTop });
+    }, 100);
+  });
+  
+  // 监听其他窗口的滚动位置变化
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.scrollPosition) {
+      const newPosition = changes.scrollPosition.newValue;
+      if (Math.abs(container.scrollTop - newPosition) > 5) {
+        isScrollSyncing = true;
+        container.scrollTop = newPosition;
+        setTimeout(() => { isScrollSyncing = false; }, 50);
+      }
+    }
+  });
 }
 
 // ============ 启动 ============

@@ -129,26 +129,46 @@ body {
 /* Window Section */
 .window-section {
   margin-bottom: 4px;
+  position: relative;
+  transition: opacity 0.2s, background 0.2s;
+}
+
+.window-section:first-child .window-header {
+  margin-top: 0;
+  border-top: none;
+}
+
+.window-section.collapsed .window-tabs {
+  display: none;
+}
+
+.window-collapse-icon {
+  transition: transform 0.2s;
+  opacity: 0.8;
+}
+
+.window-section.collapsed .window-collapse-icon {
+  transform: rotate(-90deg);
 }
 
 .window-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
+  padding: 8px 12px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--text-secondary);
+  color: #ffffff;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
+  background: var(--accent);
+  margin-top: 8px;
   cursor: pointer;
   user-select: none;
 }
 
 .window-header:hover {
-  background: var(--bg-hover);
+  background: var(--accent-hover);
 }
 
 .window-header .window-icon {
@@ -158,6 +178,7 @@ body {
 .window-header .tab-count {
   margin-left: auto;
   font-weight: normal;
+  opacity: 0.8;
 }
 
 .window-header .window-name {
@@ -168,7 +189,7 @@ body {
 }
 
 .window-header .window-name:hover {
-  background: var(--bg-active);
+  background: rgba(255, 255, 255, 0.2);
 }
 
 .window-name-input {
@@ -183,6 +204,47 @@ body {
   padding: 2px 4px;
   outline: none;
   width: 120px;
+}
+
+/* Window Drag Handle */
+.window-drag-handle {
+  cursor: grab;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 10px;
+  letter-spacing: 1px;
+  transition: color 0.15s;
+  user-select: none;
+  padding: 0 2px;
+}
+
+.window-header:hover .window-drag-handle {
+  color: #ffffff;
+}
+
+.window-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* Window Dragging State */
+.window-section.window-dragging {
+  opacity: 0.5;
+  border: 1px dashed var(--accent);
+}
+
+.window-section.window-drag-over {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.window-section.window-drag-over::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--accent);
+  border-radius: 2px;
 }
 
 /* Tab Group */
