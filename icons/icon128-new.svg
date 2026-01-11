@@ -1,0 +1,13 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="128" height="128" rx="24" fill="#1a1a2e"/>
+  
+  <!-- Tab bars -->
+  <rect x="20" y="28" width="88" height="16" rx="4" fill="#4a9eff"/>
+  <rect x="20" y="52" width="88" height="16" rx="4" fill="#3d8bdb"/>
+  <rect x="20" y="76" width="88" height="16" rx="4" fill="#2d7ac7"/>
+  
+  <!-- Active indicator -->
+  <rect x="20" y="28" width="6" height="16" rx="2" fill="#00ff88"/>
+</svg>
+
