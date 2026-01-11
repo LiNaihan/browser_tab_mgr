@@ -590,18 +590,20 @@ function bindEvents() {
   // 折叠/展开所有窗口
   elements.collapseWindowsBtn.addEventListener('click', () => {
     const windowSections = document.querySelectorAll('.window-section');
-    // 检查是否有任何展开的窗口
-    const anyExpanded = collapsedWindows.size < windowSections.length;
+    // 基于实际 DOM 状态判断是否有展开的窗口
+    const anyExpanded = Array.from(windowSections).some(s => !s.classList.contains('collapsed'));
     
     windowSections.forEach(section => {
       const windowId = parseInt(section.dataset.windowId);
       const collapseIcon = section.querySelector('.window-collapse-icon');
       
       if (anyExpanded) {
+        // 折叠所有
         section.classList.add('collapsed');
         collapsedWindows.add(windowId);
         if (collapseIcon) collapseIcon.textContent = '▶';
       } else {
+        // 展开所有
         section.classList.remove('collapsed');
         collapsedWindows.delete(windowId);
         if (collapseIcon) collapseIcon.textContent = '▼';
