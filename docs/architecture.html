@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>技术架构 - Smart Tab Cleaner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <h1>📑 Smart Tab Cleaner</h1>
+      <span class="version">v0.2.0</span>
+    </div>
+    <ul class="nav-list">
+      <li><a href="index.html">🏠 概述</a></li>
+      <li><a href="entities.html">📦 实体层次结构</a></li>
+      <li><a href="features.html">⚡ 核心功能</a></li>
+      <li><a href="tab-operations.html">🖱️ 标签操作</a></li>
+      <li><a href="drag-drop.html">🎯 拖拽操作</a></li>
+      <li><a href="context-menu.html">📋 右键菜单</a></li>
+      <li><a href="tab-groups.html">📁 Tab Groups</a></li>
+      <li><a href="session.html">💾 会话管理</a></li>
+      <li><a href="design.html">🎨 视觉设计</a></li>
+      <li><a href="shortcuts.html">⌨️ 快捷键</a></li>
+      <li><a href="architecture.html" class="active">🔧 技术架构</a></li>
+      <li><a href="roadmap.html">🚀 待开发功能</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+    <header>
+      <h1>🔧 技术架构</h1>
+      <p class="subtitle">文件结构、Chrome API、权限</p>
+    </header>
+
+    <section class="card">
+      <h2>文件结构</h2>
+      <pre><code>browser_tab_cleaner/
+├── manifest.json              # Manifest V3
+├── icons/                     # PNG 图标 (16/48/128)
+├── docs/                      # 产品说明书 (HTML)
+└── src/
+    ├── background/
+    │   └── service-worker.js  # 后台服务（自动保存、快捷键）
+    └── sidepanel/
+        ├── sidepanel.html     # 主界面
+        ├── sidepanel.css      # 样式
+        └── sidepanel.js       # 逻辑</code></pre>
+    </section>
+
+    <section class="card">
+      <h2>Chrome API 使用</h2>
+      <table>
+        <thead>
+          <tr><th>API</th><th>用途</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>chrome.tabs</code></td><td>标签页查询、移动、关闭、分组</td></tr>
+          <tr><td><code>chrome.tabGroups</code></td><td>Tab Groups 查询和更新</td></tr>
+          <tr><td><code>chrome.windows</code></td><td>窗口创建、关闭、查询</td></tr>
+          <tr><td><code>chrome.sidePanel</code></td><td>侧边栏管理</td></tr>
+          <tr><td><code>chrome.storage.local</code></td><td>存储窗口名称、会话数据、设置</td></tr>
+          <tr><td><code>chrome.alarms</code></td><td>定时任务（自动保存）</td></tr>
+          <tr><td><code>chrome.downloads</code></td><td>导出 JSON 文件</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>权限</h2>
+      <pre><code>{
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "storage",
+    "sidePanel",
+    "alarms",
+    "downloads"
+  ]
+}</code></pre>
+    </section>
+
+    <section class="card">
+      <h2>数据存储</h2>
+      <table>
+        <thead>
+          <tr><th>Key</th><th>内容</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>windowNames</code></td><td>窗口自定义名称映射 <code>{ windowId: name }</code></td></tr>
+          <tr><td><code>windowOrder</code></td><td>窗口排序顺序 <code>[windowId, ...]</code></td></tr>
+          <tr><td><code>collapsedWindows</code></td><td>折叠的窗口 ID 列表</td></tr>
+          <tr><td><code>currentSession</code></td><td>最新会话快照</td></tr>
+          <tr><td><code>scrollPosition</code></td><td>侧边栏滚动位置</td></tr>
+          <tr><td><code>fileExportEnabled</code></td><td>是否启用文件导出</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>后台服务 (Service Worker)</h2>
+      <p>主要职责：</p>
+      <ul>
+        <li>设置侧边栏行为（<code>openPanelOnActionClick: true</code>）</li>
+        <li>创建定时任务（每 10 分钟自动保存）</li>
+        <li>处理手动保存到文件的请求</li>
+      </ul>
+      
+      <div class="callout warning">
+        <div class="callout-title">⚠️ 注意</div>
+        <p>侧边栏关闭时，其 JS 上下文会被销毁，所以定时任务必须放在 Service Worker 中使用 <code>chrome.alarms</code>。</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Chrome API 限制</h2>
+      
+      <h3>无法隐藏原生标签栏</h3>
+      <p>Chrome 扩展的权限不允许隐藏或修改浏览器原生 UI（标签栏、地址栏等）。这是 Chrome 的安全设计，防止扩展伪造浏览器界面。</p>
+      
+      <h3>侧边栏无法跨窗口同步打开/关闭</h3>
+      <p><code>chrome.sidePanel.open()</code> API 有严格的用户手势要求：</p>
+      <ul>
+        <li><strong>鼠标点击侧边栏内的按钮</strong> → ✅ 被视为有效用户手势</li>
+        <li><strong>键盘快捷键（Alt+A）</strong> → ❌ 不被视为有效用户手势</li>
+        <li><strong>点击扩展图标</strong> → Chrome 自动打开当前窗口，不触发 <code>action.onClicked</code></li>
+        <li><strong>Service Worker 中的事件回调</strong> → ❌ 不被视为有效用户手势</li>
+      </ul>
+      
+      <div class="callout warning">
+        <div class="callout-title">⚠️ 结论</div>
+        <p>无法通过单一快捷键或操作同时打开/关闭所有窗口的侧边栏。每个窗口的侧边栏需要单独打开/关闭。</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
+

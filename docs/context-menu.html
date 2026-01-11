@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>右键菜单 - Smart Tab Cleaner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <h1>📑 Smart Tab Cleaner</h1>
+      <span class="version">v0.2.0</span>
+    </div>
+    <ul class="nav-list">
+      <li><a href="index.html">🏠 概述</a></li>
+      <li><a href="entities.html">📦 实体层次结构</a></li>
+      <li><a href="features.html">⚡ 核心功能</a></li>
+      <li><a href="tab-operations.html">🖱️ 标签操作</a></li>
+      <li><a href="drag-drop.html">🎯 拖拽操作</a></li>
+      <li><a href="context-menu.html" class="active">📋 右键菜单</a></li>
+      <li><a href="tab-groups.html">📁 Tab Groups</a></li>
+      <li><a href="session.html">💾 会话管理</a></li>
+      <li><a href="design.html">🎨 视觉设计</a></li>
+      <li><a href="shortcuts.html">⌨️ 快捷键</a></li>
+      <li><a href="architecture.html">🔧 技术架构</a></li>
+      <li><a href="roadmap.html">🚀 待开发功能</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+    <header>
+      <h1>📋 右键菜单</h1>
+      <p class="subtitle">标签、分组、窗口的右键菜单详解</p>
+    </header>
+
+    <!-- 单选标签菜单 -->
+    <section class="card">
+      <h2>1. 单选时（选中 1 个标签）</h2>
+      <div class="menu-preview">
+        <div class="menu-item">🔄 Reload</div>
+        <div class="menu-item">📋 Duplicate</div>
+        <div class="menu-item">📌 Pin / Unpin</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item">📦 Move to... <span class="menu-arrow">▶</span></div>
+        <div class="menu-item">📤 Remove from Group</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item">Close other tabs</div>
+        <div class="menu-item danger">✕ Close tab</div>
+      </div>
+      <p><em>"Remove from Group" 仅在标签属于某分组时显示</em></p>
+    </section>
+
+    <!-- 多选标签菜单 -->
+    <section class="card">
+      <h2>2. 多选时（选中 2+ 个标签）</h2>
+      <div class="menu-preview">
+        <div class="menu-item header">[N tabs selected]</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item">🔄 Reload All</div>
+        <div class="menu-item">📌 Pin All</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item">📦 Move to... <span class="menu-arrow">▶</span></div>
+        <div class="menu-separator"></div>
+        <div class="menu-item danger">✕ Close N tabs</div>
+      </div>
+    </section>
+
+    <!-- Move to 子菜单 -->
+    <section class="card">
+      <h2>3. Move to... 子菜单</h2>
+      <p>悬停展开，支持两级菜单。</p>
+      
+      <h3>一级：窗口列表</h3>
+      <div class="menu-preview">
+        <div class="menu-item">🆕 New Window</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item">🪟 MAIN ✓ <span class="menu-arrow">▶</span></div>
+        <div class="menu-item">🪟 WIP <span class="menu-arrow">▶</span></div>
+        <div class="menu-item">🪟 MLP <span class="menu-arrow">▶</span></div>
+      </div>
+
+      <h3>二级：分组列表（悬停窗口名显示）</h3>
+      <div class="menu-preview">
+        <div class="menu-item">🆕 New Group</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#4285f4;margin-right:8px;"></span>KM知识管理文档</div>
+        <div class="menu-item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#34a853;margin-right:8px;"></span>爽爽规则</div>
+        <div class="menu-item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#ea4335;margin-right:8px;"></span>Miro协作看板</div>
+      </div>
+
+      <h3>交互逻辑</h3>
+      <table>
+        <thead>
+          <tr><th>操作</th><th>效果</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>悬停 "Move to..."</td><td>显示窗口列表</td></tr>
+          <tr><td><strong>点击</strong>窗口名</td><td>直接移动到该窗口（不分组）</td></tr>
+          <tr><td>悬停窗口名</td><td>显示分组子菜单</td></tr>
+          <tr><td><strong>点击</strong>分组名</td><td>移动并加入该分组</td></tr>
+          <tr><td>鼠标离开菜单区域</td><td>自动关闭子菜单</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 窗口右键菜单 -->
+    <section class="card">
+      <h2>4. 右键窗口标题</h2>
+      <div class="menu-preview">
+        <div class="menu-item header">[Window (N tabs)]</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item danger">🗑️ Close Window</div>
+        <div class="menu-item">Close Other Windows</div>
+      </div>
+    </section>
+
+    <!-- 分组右键菜单 -->
+    <section class="card">
+      <h2>5. 右键分组标题</h2>
+      
+      <h3>主菜单</h3>
+      <div class="menu-preview">
+        <div class="menu-item header">[GroupName (N tabs)]</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item">📂 Ungroup</div>
+        <div class="menu-item">📦 Move to... <span class="menu-arrow">▶</span></div>
+        <div class="menu-separator"></div>
+        <div class="menu-item danger">🗑️ Close Group</div>
+      </div>
+
+      <h3>一级子菜单（窗口列表）</h3>
+      <div class="menu-preview">
+        <div class="menu-item">🆕 New Window</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item">🪟 MAIN ✓ <span class="menu-arrow">▶</span></div>
+        <div class="menu-item">🪟 WIP <span class="menu-arrow">▶</span></div>
+      </div>
+      <p><em>点击窗口名 → 移动整个 Group 到该窗口（保持分组属性）</em></p>
+
+      <h3>二级子菜单（分组合并）</h3>
+      <div class="menu-preview">
+        <div class="menu-item">🆕 New Group</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item header">MERGE INTO:</div>
+        <div class="menu-item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#4285f4;margin-right:8px;"></span>KM知识管理文档</div>
+        <div class="menu-item"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#34a853;margin-right:8px;"></span>爽爽规则</div>
+      </div>
+
+      <h3>Group 移动逻辑</h3>
+      <table>
+        <thead>
+          <tr><th>操作</th><th>效果</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>点击窗口名</td><td>移动整个 Group 到该窗口（<strong>保持分组名称和颜色</strong>）</td></tr>
+          <tr><td>悬停窗口名</td><td>显示合并选项</td></tr>
+          <tr><td>点击 "New Group"</td><td>移动到目标窗口，<strong>保持原分组属性</strong></td></tr>
+          <tr><td>点击其他分组名</td><td><strong>合并</strong>当前 Group 的所有 tab 到目标分组</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- 关闭逻辑 -->
+    <section class="card">
+      <h2>6. 菜单关闭逻辑</h2>
+      <table>
+        <thead>
+          <tr><th>操作</th><th>效果</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>点击菜单项</td><td>执行操作后关闭菜单</td></tr>
+          <tr><td>左键点击侧边栏其他区域</td><td>关闭菜单，不触发其他操作</td></tr>
+          <tr><td>右键点击侧边栏其他区域</td><td>关闭菜单</td></tr>
+          <tr><td>按 Escape</td><td>关闭菜单</td></tr>
+        </tbody>
+      </table>
+      
+      <div class="callout info">
+        <div class="callout-title">💡 实现方式</div>
+        <p>使用透明遮罩层（<code>.context-menu-overlay</code>）覆盖整个侧边栏，点击遮罩关闭菜单。</p>
+      </div>
+
+      <h3>多级菜单关闭</h3>
+      <table>
+        <thead>
+          <tr><th>操作</th><th>效果</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>从有子菜单项移到无子菜单项</td><td>关闭子菜单</td></tr>
+          <tr><td>直接移出一级菜单区域</td><td>关闭所有菜单</td></tr>
+          <tr><td>在子菜单内移动</td><td>子菜单保持显示</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
+

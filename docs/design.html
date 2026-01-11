@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>视觉设计 - Smart Tab Cleaner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <h1>📑 Smart Tab Cleaner</h1>
+      <span class="version">v0.2.0</span>
+    </div>
+    <ul class="nav-list">
+      <li><a href="index.html">🏠 概述</a></li>
+      <li><a href="entities.html">📦 实体层次结构</a></li>
+      <li><a href="features.html">⚡ 核心功能</a></li>
+      <li><a href="tab-operations.html">🖱️ 标签操作</a></li>
+      <li><a href="drag-drop.html">🎯 拖拽操作</a></li>
+      <li><a href="context-menu.html">📋 右键菜单</a></li>
+      <li><a href="tab-groups.html">📁 Tab Groups</a></li>
+      <li><a href="session.html">💾 会话管理</a></li>
+      <li><a href="design.html" class="active">🎨 视觉设计</a></li>
+      <li><a href="shortcuts.html">⌨️ 快捷键</a></li>
+      <li><a href="architecture.html">🔧 技术架构</a></li>
+      <li><a href="roadmap.html">🚀 待开发功能</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+    <header>
+      <h1>🎨 视觉设计</h1>
+      <p class="subtitle">配色方案和状态样式</p>
+    </header>
+
+    <section class="card">
+      <h2>配色方案（深色主题）</h2>
+      <div class="color-grid">
+        <div class="color-swatch" style="background: #1e1e1e;">--bg-primary<br>#1e1e1e</div>
+        <div class="color-swatch" style="background: #252526;">--bg-secondary<br>#252526</div>
+        <div class="color-swatch" style="background: #2a2d2e;">--bg-hover<br>#2a2d2e</div>
+        <div class="color-swatch" style="background: #37373d;">--bg-active<br>#37373d</div>
+        <div class="color-swatch" style="background: #cccccc; color: #1e1e1e;">--text-primary<br>#cccccc</div>
+        <div class="color-swatch" style="background: #858585;">--text-secondary<br>#858585</div>
+        <div class="color-swatch" style="background: #0078d4;">--accent<br>#0078d4</div>
+        <div class="color-swatch" style="background: #f14c4c;">--danger<br>#f14c4c</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>标签状态样式</h2>
+      <table>
+        <thead>
+          <tr><th>状态</th><th>样式</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>默认</td><td>透明背景</td></tr>
+          <tr><td>悬停</td><td><code>--bg-hover</code> 背景</td></tr>
+          <tr><td>激活（当前标签）</td><td><code>--bg-active</code> 背景，白色文字</td></tr>
+          <tr><td><strong>选中（多选）</strong></td><td>蓝色半透明背景 <code>rgba(0, 120, 212, 0.3)</code></td></tr>
+          <tr><td>固定（Pinned）</td><td>带 📌 图标前缀</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>窗口标题栏</h2>
+      <ul>
+        <li>背景色：<code>var(--accent)</code> 纯色</li>
+        <li>文字色：<code>var(--text-active)</code></li>
+        <li>悬停：<code>var(--accent-hover)</code> 更亮的蓝色</li>
+        <li>折叠图标旋转动画</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>Tab Group 颜色</h2>
+      <p>支持 Chrome 原生的 9 种颜色，作为左侧边框和标题背景：</p>
+      <pre><code>--group-grey: #5f6368
+--group-blue: #4285f4
+--group-red: #ea4335
+--group-yellow: #fbbc04
+--group-green: #34a853
+--group-pink: #e91e63
+--group-purple: #9c27b0
+--group-cyan: #00bcd4
+--group-orange: #ff9800</code></pre>
+    </section>
+
+    <section class="card">
+      <h2>拖拽视觉反馈</h2>
+      <table>
+        <thead>
+          <tr><th>元素</th><th>样式</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>被拖拽项</td><td>半透明 + 虚线边框</td></tr>
+          <tr><td>目标标签</td><td>高亮背景</td></tr>
+          <tr><td>目标分组</td><td>蓝色高亮边框</td></tr>
+          <tr><td>目标窗口</td><td>蓝色高亮边框 + 阴影</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
+

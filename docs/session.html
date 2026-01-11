@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>会话管理 - Smart Tab Cleaner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <h1>📑 Smart Tab Cleaner</h1>
+      <span class="version">v0.2.0</span>
+    </div>
+    <ul class="nav-list">
+      <li><a href="index.html">🏠 概述</a></li>
+      <li><a href="entities.html">📦 实体层次结构</a></li>
+      <li><a href="features.html">⚡ 核心功能</a></li>
+      <li><a href="tab-operations.html">🖱️ 标签操作</a></li>
+      <li><a href="drag-drop.html">🎯 拖拽操作</a></li>
+      <li><a href="context-menu.html">📋 右键菜单</a></li>
+      <li><a href="tab-groups.html">📁 Tab Groups</a></li>
+      <li><a href="session.html" class="active">💾 会话管理</a></li>
+      <li><a href="design.html">🎨 视觉设计</a></li>
+      <li><a href="shortcuts.html">⌨️ 快捷键</a></li>
+      <li><a href="architecture.html">🔧 技术架构</a></li>
+      <li><a href="roadmap.html">🚀 待开发功能</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+    <header>
+      <h1>💾 会话管理</h1>
+      <p class="subtitle">保存和恢复浏览状态</p>
+    </header>
+
+    <section class="card">
+      <h2>保存机制</h2>
+      <table>
+        <thead>
+          <tr><th>触发方式</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>自动保存</strong></td><td>每 10 分钟自动保存一次</td></tr>
+          <tr><td><strong>手动保存</strong></td><td>点击 Sessions 面板的 "💾 Save Now"</td></tr>
+        </tbody>
+      </table>
+      <div class="callout warning">
+        <div class="callout-title">⚠️ 注意</div>
+        <p>只保留一个最新的 checkpoint，每次保存会覆盖之前的数据。</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>保存内容</h2>
+      <table>
+        <thead>
+          <tr><th>数据</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>窗口</td><td>所有窗口及自定义名称</td></tr>
+          <tr><td>Tab Groups</td><td>分组名称、颜色、包含的标签</td></tr>
+          <tr><td>标签</td><td>URL、标题、固定状态</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>恢复会话</h2>
+      <p>点击顶部工具栏的 💾 Sessions 按钮，有两种恢复模式：</p>
+      <table>
+        <thead>
+          <tr><th>模式</th><th>按钮</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>替换</strong></td><td>🔄 Replace</td><td>关闭所有当前窗口，恢复保存的会话</td></tr>
+          <tr><td><strong>追加</strong></td><td>➕ Add</td><td>在新窗口中打开，保留当前窗口</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>导入/导出</h2>
+      <p>由于 Chrome 扩展无法直接写入文件系统，提供 JSON 导入导出功能：</p>
+      <table>
+        <thead>
+          <tr><th>操作</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>📤 Export JSON</strong></td><td>下载当前会话为 JSON 文件</td></tr>
+          <tr><td><strong>📥 Import JSON</strong></td><td>从 JSON 文件导入会话数据</td></tr>
+        </tbody>
+      </table>
+      
+      <div class="callout info">
+        <div class="callout-title">💡 文件导出行为</div>
+        <ul>
+          <li>首次手动保存会弹出文件保存对话框</li>
+          <li>之后的手动保存和自动保存会静默覆盖同一文件</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>存储位置</h2>
+      <ul>
+        <li>数据存储在 <code>chrome.storage.local</code>（浏览器内部）</li>
+        <li>若需版本控制，可手动导出 JSON 保存到 repo 目录</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>限制</h2>
+      <ul class="limit-list">
+        <li><code>chrome://</code> 开头的系统页面不会被恢复</li>
+        <li>删除扩展后，<code>chrome.storage.local</code> 中的数据会丢失</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
+

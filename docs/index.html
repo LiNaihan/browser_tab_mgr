@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Tab Cleaner - 产品说明书</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <h1>📑 Smart Tab Cleaner</h1>
+      <span class="version">v0.2.0</span>
+    </div>
+    <ul class="nav-list">
+      <li><a href="index.html" class="active">🏠 概述</a></li>
+      <li><a href="entities.html">📦 实体层次结构</a></li>
+      <li><a href="features.html">⚡ 核心功能</a></li>
+      <li><a href="tab-operations.html">🖱️ 标签操作</a></li>
+      <li><a href="drag-drop.html">🎯 拖拽操作</a></li>
+      <li><a href="context-menu.html">📋 右键菜单</a></li>
+      <li><a href="tab-groups.html">📁 Tab Groups</a></li>
+      <li><a href="session.html">💾 会话管理</a></li>
+      <li><a href="design.html">🎨 视觉设计</a></li>
+      <li><a href="shortcuts.html">⌨️ 快捷键</a></li>
+      <li><a href="architecture.html">🔧 技术架构</a></li>
+      <li><a href="roadmap.html">🚀 待开发功能</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+    <header>
+      <h1>概述</h1>
+      <p class="subtitle">Smart Tab Cleaner 产品说明书</p>
+    </header>
+
+    <section class="card">
+      <h2>📌 什么是 Smart Tab Cleaner？</h2>
+      <p>Smart Tab Cleaner 是一个 <strong>Chrome 侧边栏扩展</strong>，用于管理浏览器标签页。支持多窗口管理、多选操作、Tab Groups 等功能。</p>
+      
+      <div class="feature-grid">
+        <div class="feature-item">
+          <span class="icon">🪟</span>
+          <h3>多窗口管理</h3>
+          <p>统一管理所有浏览器窗口的标签</p>
+        </div>
+        <div class="feature-item">
+          <span class="icon">📁</span>
+          <h3>Tab Groups</h3>
+          <p>支持 Chrome 原生标签组功能</p>
+        </div>
+        <div class="feature-item">
+          <span class="icon">🔄</span>
+          <h3>会话保存</h3>
+          <p>保存和恢复浏览状态</p>
+        </div>
+        <div class="feature-item">
+          <span class="icon">🎯</span>
+          <h3>拖拽操作</h3>
+          <p>标签、分组、窗口均可拖拽</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>📚 文档导航</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>模块</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><a href="entities.html">实体层次结构</a></td>
+            <td>Tab、Tab Group、Window、Session 的定义和关系</td>
+          </tr>
+          <tr>
+            <td><a href="features.html">核心功能</a></td>
+            <td>侧边栏、窗口管理、搜索等基本功能</td>
+          </tr>
+          <tr>
+            <td><a href="tab-operations.html">标签操作</a></td>
+            <td>单击、多选（Cmd/Shift）操作</td>
+          </tr>
+          <tr>
+            <td><a href="drag-drop.html">拖拽操作</a></td>
+            <td>标签、分组、窗口的拖拽逻辑</td>
+          </tr>
+          <tr>
+            <td><a href="context-menu.html">右键菜单</a></td>
+            <td>标签、分组、窗口的右键菜单详解</td>
+          </tr>
+          <tr>
+            <td><a href="tab-groups.html">Tab Groups</a></td>
+            <td>创建、添加、显示分组</td>
+          </tr>
+          <tr>
+            <td><a href="session.html">会话管理</a></td>
+            <td>保存、恢复、导入导出</td>
+          </tr>
+          <tr>
+            <td><a href="design.html">视觉设计</a></td>
+            <td>配色方案、状态样式</td>
+          </tr>
+          <tr>
+            <td><a href="shortcuts.html">快捷键</a></td>
+            <td>键盘快捷键配置</td>
+          </tr>
+          <tr>
+            <td><a href="architecture.html">技术架构</a></td>
+            <td>文件结构、Chrome API、权限</td>
+          </tr>
+          <tr>
+            <td><a href="roadmap.html">待开发功能</a></td>
+            <td>未来规划和版本历史</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>⚠️ 已知限制</h2>
+      <ul class="limit-list">
+        <li><strong>无法隐藏原生标签栏</strong>：Chrome 不允许扩展控制浏览器 UI</li>
+        <li><strong>无法检测主窗口点击</strong>：Side Panel 是独立上下文，`window.blur` 不触发</li>
+        <li><strong>无法修改窗口标题</strong>：Chrome 没有 `chrome.windows.setTitle()` API</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
+

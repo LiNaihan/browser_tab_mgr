@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>核心功能 - Smart Tab Cleaner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <h1>📑 Smart Tab Cleaner</h1>
+      <span class="version">v0.2.0</span>
+    </div>
+    <ul class="nav-list">
+      <li><a href="index.html">🏠 概述</a></li>
+      <li><a href="entities.html">📦 实体层次结构</a></li>
+      <li><a href="features.html" class="active">⚡ 核心功能</a></li>
+      <li><a href="tab-operations.html">🖱️ 标签操作</a></li>
+      <li><a href="drag-drop.html">🎯 拖拽操作</a></li>
+      <li><a href="context-menu.html">📋 右键菜单</a></li>
+      <li><a href="tab-groups.html">📁 Tab Groups</a></li>
+      <li><a href="session.html">💾 会话管理</a></li>
+      <li><a href="design.html">🎨 视觉设计</a></li>
+      <li><a href="shortcuts.html">⌨️ 快捷键</a></li>
+      <li><a href="architecture.html">🔧 技术架构</a></li>
+      <li><a href="roadmap.html">🚀 待开发功能</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+    <header>
+      <h1>⚡ 核心功能</h1>
+      <p class="subtitle">侧边栏、窗口管理、搜索等基本功能</p>
+    </header>
+
+    <section class="card">
+      <h2>1. 侧边栏标签列表</h2>
+      <ul>
+        <li>在浏览器侧边栏（Side Panel）中垂直显示所有标签页</li>
+        <li>按窗口分组显示</li>
+        <li>支持 Chrome 原生 Tab Groups 的显示和折叠</li>
+        <li>实时更新：标签创建、关闭、移动等操作会自动反映</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>2. 窗口管理</h2>
+      <table>
+        <thead>
+          <tr><th>功能</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>显示窗口名称</td><td>默认显示 "Current Window" 或 "Window {id}"</td></tr>
+          <tr><td>自定义窗口名称</td><td><strong>双击</strong>窗口标题栏编辑名称</td></tr>
+          <tr><td>保存窗口名称</td><td>按 Enter 或失焦自动保存到 <code>chrome.storage.local</code></td></tr>
+          <tr><td>取消编辑</td><td>按 Escape</td></tr>
+          <tr><td>折叠/展开窗口</td><td>点击窗口标题栏</td></tr>
+          <tr><td>折叠/展开所有窗口</td><td>点击工具栏的 ☰ 按钮</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>3. 搜索</h2>
+      <ul>
+        <li>顶部搜索框支持按标题或 URL 过滤标签</li>
+        <li>实时过滤，输入即搜索</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>4. 滚动同步</h2>
+      <p>不同窗口打开的侧边栏，滚动位置保持同步。</p>
+      <div class="callout info">
+        <div class="callout-title">💡 实现方式</div>
+        <p>滚动位置存储在 <code>chrome.storage.local.scrollPosition</code>，各窗口监听变化并同步。</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
+

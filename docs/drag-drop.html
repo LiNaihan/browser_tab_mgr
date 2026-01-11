@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>拖拽操作 - Smart Tab Cleaner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <h1>📑 Smart Tab Cleaner</h1>
+      <span class="version">v0.2.0</span>
+    </div>
+    <ul class="nav-list">
+      <li><a href="index.html">🏠 概述</a></li>
+      <li><a href="entities.html">📦 实体层次结构</a></li>
+      <li><a href="features.html">⚡ 核心功能</a></li>
+      <li><a href="tab-operations.html">🖱️ 标签操作</a></li>
+      <li><a href="drag-drop.html" class="active">🎯 拖拽操作</a></li>
+      <li><a href="context-menu.html">📋 右键菜单</a></li>
+      <li><a href="tab-groups.html">📁 Tab Groups</a></li>
+      <li><a href="session.html">💾 会话管理</a></li>
+      <li><a href="design.html">🎨 视觉设计</a></li>
+      <li><a href="shortcuts.html">⌨️ 快捷键</a></li>
+      <li><a href="architecture.html">🔧 技术架构</a></li>
+      <li><a href="roadmap.html">🚀 待开发功能</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+    <header>
+      <h1>🎯 拖拽操作</h1>
+      <p class="subtitle">标签、分组、窗口的拖拽逻辑详解</p>
+    </header>
+
+    <section class="card">
+      <h2>概述</h2>
+      <p>拖拽操作与右键菜单 "Move to..." 实现相同的功能，提供更直观的交互方式。三种实体（Tab、Group、Window）各有不同的拖拽行为。</p>
+    </section>
+
+    <section class="card">
+      <h2>1. 标签（Tab）拖拽</h2>
+      
+      <table>
+        <thead>
+          <tr>
+            <th>拖放目标</th>
+            <th>效果</th>
+            <th>等效右键操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>另一个标签上</td>
+            <td>插入到该标签位置</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>分组标题（Group Header）</td>
+            <td>加入该分组</td>
+            <td>Move to → 分组名</td>
+          </tr>
+          <tr>
+            <td>分组区域（Group Body）</td>
+            <td>加入该分组</td>
+            <td>Move to → 分组名</td>
+          </tr>
+          <tr>
+            <td>窗口标题栏</td>
+            <td>移动到该窗口开头（不分组）</td>
+            <td>Move to → 窗口名</td>
+          </tr>
+          <tr>
+            <td>窗口区域</td>
+            <td>移动到该窗口末尾（不分组）</td>
+            <td>Move to → 窗口名</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout info">
+        <div class="callout-title">💡 视觉反馈</div>
+        <ul>
+          <li>拖拽时，目标标签显示 <code>drag-over</code> 高亮</li>
+          <li>跨窗口时，目标窗口显示 <code>window-drop-target</code> 高亮</li>
+          <li>拖到分组时，显示 <code>group-drop-target</code> 高亮</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>2. 分组（Group）拖拽</h2>
+      <p>拖拽分组标题栏可移动整个分组。</p>
+      
+      <table>
+        <thead>
+          <tr>
+            <th>拖放目标</th>
+            <th>效果</th>
+            <th>等效右键操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>另一个分组</td>
+            <td><strong>排序</strong>：移动到目标分组位置（保持分组属性）</td>
+            <td>—</td>
+          </tr>
+          <tr>
+            <td>窗口标题栏</td>
+            <td><strong>移动</strong>：整个分组移动到该窗口（保持分组属性）</td>
+            <td>Move to → 窗口名</td>
+          </tr>
+          <tr>
+            <td>窗口区域</td>
+            <td><strong>移动</strong>：整个分组移动到该窗口（保持分组属性）</td>
+            <td>Move to → 窗口名</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout info">
+        <div class="callout-title">💡 分组移动</div>
+        <p>无论拖到哪里，分组的 title 和 color 都会保持。跨窗口移动时会在新窗口重建相同属性的分组。</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>3. 窗口（Window）拖拽</h2>
+      <p>窗口拖拽<strong>仅用于排序</strong>，通过标题栏左侧的 <code>⋮⋮</code> 手柄触发。</p>
+      
+      <h3>拖拽行为</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>操作</th>
+            <th>效果</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>拖拽手柄 <code>⋮⋮</code></td>
+            <td>开始窗口排序拖拽</td>
+          </tr>
+          <tr>
+            <td>拖到另一个窗口上方</td>
+            <td>插入到该窗口之前</td>
+          </tr>
+          <tr>
+            <td>松开</td>
+            <td>保存新顺序到 <code>chrome.storage.local</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>折叠行为</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>时机</th>
+            <th>行为</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>开始拖拽时</td>
+            <td>自动<strong>折叠所有窗口</strong>，便于看清窗口位置</td>
+          </tr>
+          <tr>
+            <td>松开时</td>
+            <td><strong>恢复</strong>拖拽前未折叠的窗口（已折叠的保持折叠）</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout info">
+        <div class="callout-title">💡 实现细节</div>
+        <p>开始拖拽时，记录当前未折叠的窗口到 <code>windowsExpandedBeforeDrag</code>，结束时只展开这些窗口。</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>视觉样式</h2>
+      
+      <h3>CSS 类</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>类名</th>
+            <th>应用对象</th>
+            <th>效果</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>.dragging</code></td>
+            <td>被拖拽的标签</td>
+            <td>半透明</td>
+          </tr>
+          <tr>
+            <td><code>.group-dragging</code></td>
+            <td>被拖拽的分组</td>
+            <td>半透明、虚线边框</td>
+          </tr>
+          <tr>
+            <td><code>.window-dragging</code></td>
+            <td>被拖拽的窗口</td>
+            <td>半透明、虚线边框</td>
+          </tr>
+          <tr>
+            <td><code>.drag-over</code></td>
+            <td>目标标签</td>
+            <td>高亮背景</td>
+          </tr>
+          <tr>
+            <td><code>.group-drop-target</code></td>
+            <td>目标分组</td>
+            <td>蓝色高亮边框</td>
+          </tr>
+          <tr>
+            <td><code>.window-drop-target</code></td>
+            <td>目标窗口</td>
+            <td>蓝色高亮边框</td>
+          </tr>
+          <tr>
+            <td><code>.window-drag-over</code></td>
+            <td>窗口排序目标</td>
+            <td>发光边框</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>状态变量</h2>
+      <pre><code>let draggedTab = null;              // 拖拽中的标签 { id, windowId }
+let draggedGroup = null;            // 拖拽中的分组 { id, windowId }
+let draggedWindow = null;           // 拖拽中的窗口 ID
+let windowsExpandedBeforeDrag = new Set();  // 拖拽前展开的窗口</code></pre>
+    </section>
+
+    <section class="card">
+      <h2>统一 Move 操作模块 (MoveOperations)</h2>
+      
+      <h3>拖拽操作</h3>
+      <table>
+        <thead>
+          <tr><th>函数</th><th>操作</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>tabsToGroup(tabIds, groupId)</code></td>
+            <td>Tab(s) → Group</td>
+            <td>将标签加入已有分组</td>
+          </tr>
+          <tr>
+            <td><code>tabsToWindow(tabIds, windowId)</code></td>
+            <td>Tab(s) → Window</td>
+            <td>移动到窗口（不分组）</td>
+          </tr>
+          <tr>
+            <td><code>groupToGroup(sourceGroupId, targetGroupId)</code></td>
+            <td>Group → Group</td>
+            <td>排序（移动到目标位置，保持属性）</td>
+          </tr>
+          <tr>
+            <td><code>groupToWindow(sourceGroupId, windowId)</code></td>
+            <td>Group → Window</td>
+            <td>移动分组（保持属性）</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>右键菜单额外支持</h3>
+      <table>
+        <thead>
+          <tr><th>函数</th><th>操作</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>tabsToNewGroup(tabIds, windowId, title?)</code></td>
+            <td>Tab(s) → New Group</td>
+            <td>创建新分组（仅右键）</td>
+          </tr>
+          <tr>
+            <td><code>tabsToNewWindow(tabIds)</code></td>
+            <td>Tab(s) → New Window</td>
+            <td>移动到新窗口（仅右键）</td>
+          </tr>
+          <tr>
+            <td><code>groupToNewWindow(sourceGroupId)</code></td>
+            <td>Group → New Window</td>
+            <td>移动到新窗口（仅右键）</td>
+          </tr>
+        </tbody>
+      </table>
+      
+      <div class="callout info">
+        <div class="callout-title">💡 设计原则</div>
+        <p>所有移动逻辑集中在 <code>MoveOperations</code> 模块。拖拽只支持移动到现有目标；创建新目标（New Group/New Window）仅通过右键菜单。</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
+

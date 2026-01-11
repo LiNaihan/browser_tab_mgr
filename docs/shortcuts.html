@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>快捷键 - Smart Tab Cleaner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <h1>📑 Smart Tab Cleaner</h1>
+      <span class="version">v0.2.0</span>
+    </div>
+    <ul class="nav-list">
+      <li><a href="index.html">🏠 概述</a></li>
+      <li><a href="entities.html">📦 实体层次结构</a></li>
+      <li><a href="features.html">⚡ 核心功能</a></li>
+      <li><a href="tab-operations.html">🖱️ 标签操作</a></li>
+      <li><a href="drag-drop.html">🎯 拖拽操作</a></li>
+      <li><a href="context-menu.html">📋 右键菜单</a></li>
+      <li><a href="tab-groups.html">📁 Tab Groups</a></li>
+      <li><a href="session.html">💾 会话管理</a></li>
+      <li><a href="design.html">🎨 视觉设计</a></li>
+      <li><a href="shortcuts.html" class="active">⌨️ 快捷键</a></li>
+      <li><a href="architecture.html">🔧 技术架构</a></li>
+      <li><a href="roadmap.html">🚀 待开发功能</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+    <header>
+      <h1>⌨️ 快捷键</h1>
+      <p class="subtitle">键盘快捷键配置</p>
+    </header>
+
+    <section class="card">
+      <h2>默认快捷键</h2>
+      <table>
+        <thead>
+          <tr><th>快捷键</th><th>功能</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>Alt+A</code> (Mac: <code>Option+A</code>)</td><td>打开/关闭侧边栏</td></tr>
+          <tr><td><code>Escape</code></td><td>关闭右键菜单</td></tr>
+          <tr><td><code>Cmd/Ctrl + Click</code></td><td>切换标签选中状态</td></tr>
+          <tr><td><code>Shift + Click</code></td><td>范围选择标签</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card">
+      <h2>自定义快捷键</h2>
+      <p>点击底部 ⚙️ 设置按钮 → "🔧 Customize Shortcuts"</p>
+      <p>或直接访问：<code>chrome://extensions/shortcuts</code></p>
+      
+      <div class="callout info">
+        <div class="callout-title">💡 提示</div>
+        <p>在 Chrome 扩展快捷键设置页面，可以为 "Open sidebar" 命令设置自定义快捷键。</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Manifest 配置</h2>
+      <pre><code>{
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Alt+A",
+        "mac": "Alt+A"
+      },
+      "description": "Open sidebar"
+    }
+  }
+}</code></pre>
+      
+      <div class="callout info">
+        <div class="callout-title">💡 _execute_action</div>
+        <p>使用 <code>_execute_action</code> 而非自定义命令名，配合 <code>sidePanel.setPanelBehavior({ openPanelOnActionClick: true })</code>，Chrome 会自动处理侧边栏的开关切换。</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
+

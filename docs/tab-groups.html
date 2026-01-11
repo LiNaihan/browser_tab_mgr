@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tab Groups - Smart Tab Cleaner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <h1>📑 Smart Tab Cleaner</h1>
+      <span class="version">v0.2.0</span>
+    </div>
+    <ul class="nav-list">
+      <li><a href="index.html">🏠 概述</a></li>
+      <li><a href="entities.html">📦 实体层次结构</a></li>
+      <li><a href="features.html">⚡ 核心功能</a></li>
+      <li><a href="tab-operations.html">🖱️ 标签操作</a></li>
+      <li><a href="drag-drop.html">🎯 拖拽操作</a></li>
+      <li><a href="context-menu.html">📋 右键菜单</a></li>
+      <li><a href="tab-groups.html" class="active">📁 Tab Groups</a></li>
+      <li><a href="session.html">💾 会话管理</a></li>
+      <li><a href="design.html">🎨 视觉设计</a></li>
+      <li><a href="shortcuts.html">⌨️ 快捷键</a></li>
+      <li><a href="architecture.html">🔧 技术架构</a></li>
+      <li><a href="roadmap.html">🚀 待开发功能</a></li>
+    </ul>
+  </nav>
+
+  <main class="content">
+    <header>
+      <h1>📁 Tab Groups</h1>
+      <p class="subtitle">Chrome 原生标签组功能</p>
+    </header>
+
+    <section class="card">
+      <h2>创建分组</h2>
+      <ol>
+        <li>选中一个或多个标签</li>
+        <li>右键选择 "Create Group"</li>
+        <li>在弹出的输入框中输入分组名称</li>
+        <li>系统自动分配随机颜色</li>
+      </ol>
+    </section>
+
+    <section class="card">
+      <h2>添加到已有分组</h2>
+      <ol>
+        <li>选中一个或多个标签</li>
+        <li>右键选择 "Move to..." → 选择窗口 → 选择分组</li>
+        <li>或直接拖拽标签到分组区域</li>
+      </ol>
+    </section>
+
+    <section class="card">
+      <h2>分组显示</h2>
+      <ul>
+        <li>分组以缩进 + 左侧彩色边框显示</li>
+        <li>点击分组标题可折叠/展开</li>
+        <li>显示分组内标签数量</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2>分组颜色</h2>
+      <p>支持 Chrome 原生的 9 种颜色：</p>
+      <div class="color-grid">
+        <div class="color-swatch" style="background: #5f6368;">grey</div>
+        <div class="color-swatch" style="background: #4285f4;">blue</div>
+        <div class="color-swatch" style="background: #ea4335;">red</div>
+        <div class="color-swatch" style="background: #fbbc04;">yellow</div>
+        <div class="color-swatch" style="background: #34a853;">green</div>
+        <div class="color-swatch" style="background: #e91e63;">pink</div>
+        <div class="color-swatch" style="background: #9c27b0;">purple</div>
+        <div class="color-swatch" style="background: #00bcd4;">cyan</div>
+        <div class="color-swatch" style="background: #ff9800;">orange</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>分组操作</h2>
+      <table>
+        <thead>
+          <tr><th>操作</th><th>方式</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>折叠/展开</td><td>点击分组标题</td></tr>
+          <tr><td>折叠所有分组</td><td>点击工具栏折叠按钮</td></tr>
+          <tr><td>解散分组</td><td>右键 → Ungroup（标签保留）</td></tr>
+          <tr><td>关闭分组</td><td>右键 → Close Group（关闭所有标签）</td></tr>
+          <tr><td>移动整个分组</td><td>右键 → Move to... → 窗口名</td></tr>
+          <tr><td>合并到其他分组</td><td>右键 → Move to... → 窗口 → 分组名</td></tr>
+          <tr><td>移出标签</td><td>右键标签 → Remove from Group</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>
+

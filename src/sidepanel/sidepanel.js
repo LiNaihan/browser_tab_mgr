@@ -7,10 +7,14 @@ let allTabs = [];
 let allGroups = [];
 let windowNames = {}; // 自定义窗口名称
 let windowOrder = []; // 窗口排序顺序
+let collapsedWindows = new Set(); // 折叠的窗口 ID
+let collapsedGroups = new Set(); // 折叠的分组 ID
 let searchQuery = '';
 let draggedTab = null;
 let draggedWindow = null; // 拖拽中的窗口
+let draggedGroup = null; // 拖拽中的分组
 let dragOverElement = null;
+let windowsExpandedBeforeDrag = new Set(); // 拖拽窗口前展开的窗口
 let selectedTabIds = new Set(); // 多选的标签 ID
 let lastSelectedTabId = null;  // 上次选中的标签（用于 Shift 范围选择）
 
@@ -19,10 +23,235 @@ const elements = {
   searchInput: document.getElementById('searchInput'),
   tabList: document.getElementById('tabList'),
   tabStats: document.getElementById('tabStats'),
-  newTabBtn: document.getElementById('newTabBtn'),
   collapseAllBtn: document.getElementById('collapseAllBtn'),
+  collapseWindowsBtn: document.getElementById('collapseWindowsBtn'),
   sessionsBtn: document.getElementById('sessionsBtn'),
   settingsBtn: document.getElementById('settingsBtn'),
+};
+
+// ============ 统一 Move 操作 ============
+// 
+// 有效操作矩阵 (拖拽):
+// | 源 \ 目标    | Tab      | Group      | Window     |
+// |-------------|----------|------------|------------|
+// | Tab(s)      | 插入位置  | ✅ 加入分组 | ✅ 移动     |
+// | Group       | ❌       | ✅ 排序     | ✅ 移动     |
+// | Window      | ❌       | ❌         | ✅ 排序     |
+//
+// 右键菜单额外支持: Tab(s) → New Group, Tab(s) → New Window, Group → New Window
+
+const MoveOperations = {
+  /**
+   * Tab(s) → 已有 Group：加入分组
+   * @param {number[]} tabIds - 要移动的 tab ID 数组
+   * @param {number} targetGroupId - 目标分组 ID
+   */
+  async tabsToGroup(tabIds, targetGroupId) {
+    if (!tabIds.length || !targetGroupId) return;
+    
+    // 获取目标 group 所在的 window
+    const targetTab = allTabs.find(t => t.groupId === targetGroupId);
+    if (!targetTab) {
+      console.error('Target group not found');
+      return;
+    }
+    
+    try {
+      // 先移动到目标窗口
+      await chrome.tabs.move(tabIds, { windowId: targetTab.windowId, index: -1 });
+      // 再加入分组
+      await chrome.tabs.group({ tabIds, groupId: targetGroupId });
+    } catch (err) {
+      console.error('tabsToGroup failed:', err);
+    }
+  },
+
+  /**
+   * Tab(s) → Window：移动到窗口（不分组）
+   * @param {number[]} tabIds - 要移动的 tab ID 数组
+   * @param {number} targetWindowId - 目标窗口 ID
+   */
+  async tabsToWindow(tabIds, targetWindowId) {
+    if (!tabIds.length || !targetWindowId) return;
+    
+    try {
+      await chrome.tabs.move(tabIds, { windowId: targetWindowId, index: -1 });
+    } catch (err) {
+      console.error('tabsToWindow failed:', err);
+    }
+  },
+
+  /**
+   * Tab(s) → New Group：创建新分组
+   * @param {number[]} tabIds - 要移动的 tab ID 数组
+   * @param {number} windowId - 在哪个窗口创建分组
+   * @param {string} [title] - 可选的分组名称
+   */
+  async tabsToNewGroup(tabIds, windowId, title = '') {
+    if (!tabIds.length) return;
+    
+    try {
+      // 先确保 tabs 在目标窗口
+      const firstTab = allTabs.find(t => t.id === tabIds[0]);
+      if (firstTab && firstTab.windowId !== windowId) {
+        await chrome.tabs.move(tabIds, { windowId, index: -1 });
+      }
+      
+      // 创建新分组
+      const groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId } });
+      
+      // 设置分组名称（如果提供）
+      if (title) {
+        await chrome.tabGroups.update(groupId, { title });
+      }
+      
+      return groupId;
+    } catch (err) {
+      console.error('tabsToNewGroup failed:', err);
+    }
+  },
+
+  /**
+   * Tab(s) → New Window：移动到新窗口
+   * @param {number[]} tabIds - 要移动的 tab ID 数组
+   */
+  async tabsToNewWindow(tabIds) {
+    if (!tabIds.length) return;
+    
+    try {
+      // 用第一个 tab 创建新窗口
+      const newWindow = await chrome.windows.create({ tabId: tabIds[0] });
+      
+      // 移动剩余 tabs
+      if (tabIds.length > 1) {
+        await chrome.tabs.move(tabIds.slice(1), { windowId: newWindow.id, index: -1 });
+      }
+      
+      return newWindow.id;
+    } catch (err) {
+      console.error('tabsToNewWindow failed:', err);
+    }
+  },
+
+  /**
+   * Group → Group：排序（移动到目标 group 位置）
+   * @param {number} sourceGroupId - 源分组 ID
+   * @param {number} targetGroupId - 目标分组 ID（移动到此位置之前）
+   */
+  async groupToGroup(sourceGroupId, targetGroupId) {
+    if (!sourceGroupId || !targetGroupId || sourceGroupId === targetGroupId) return;
+    
+    // 获取源分组和目标分组的信息
+    const sourceTabs = allTabs.filter(t => t.groupId === sourceGroupId);
+    const targetTabs = allTabs.filter(t => t.groupId === targetGroupId);
+    
+    if (!sourceTabs.length || !targetTabs.length) return;
+    
+    // 找到目标分组第一个 tab 的位置
+    const targetIndex = Math.min(...targetTabs.map(t => t.index));
+    const tabIds = sourceTabs.map(t => t.id);
+    const targetWindowId = targetTabs[0].windowId;
+    const sourceGroup = allGroups.find(g => g.id === sourceGroupId);
+    
+    try {
+      // 移动到目标位置
+      await chrome.tabs.move(tabIds, { windowId: targetWindowId, index: targetIndex });
+      
+      // 无论同窗口还是跨窗口，都需要重新创建分组（因为 move 会打散分组）
+      const newGroupId = await chrome.tabs.group({ tabIds, createProperties: { windowId: targetWindowId } });
+      if (sourceGroup) {
+        await chrome.tabGroups.update(newGroupId, { title: sourceGroup.title || '', color: sourceGroup.color });
+      }
+    } catch (err) {
+      console.error('groupToGroup failed:', err);
+    }
+  },
+
+  /**
+   * Group → Window：移动整个分组到窗口（保持分组属性）
+   * @param {number} sourceGroupId - 源分组 ID
+   * @param {number} targetWindowId - 目标窗口 ID
+   */
+  async groupToWindow(sourceGroupId, targetWindowId) {
+    if (!sourceGroupId || !targetWindowId) return;
+    
+    // 获取源分组信息
+    const sourceGroup = allGroups.find(g => g.id === sourceGroupId);
+    const sourceTabs = allTabs.filter(t => t.groupId === sourceGroupId);
+    
+    if (!sourceTabs.length) return;
+    
+    const tabIds = sourceTabs.map(t => t.id);
+    const sourceWindowId = sourceTabs[0].windowId;
+    
+    try {
+      // 如果已在目标窗口，无需移动
+      if (sourceWindowId === targetWindowId) return;
+      
+      // 移动 tabs 到目标窗口
+      await chrome.tabs.move(tabIds, { windowId: targetWindowId, index: -1 });
+      
+      // 在新窗口创建分组（保持原属性）
+      const newGroupId = await chrome.tabs.group({ 
+        tabIds, 
+        createProperties: { windowId: targetWindowId } 
+      });
+      
+      // 恢复分组属性
+      if (sourceGroup) {
+        await chrome.tabGroups.update(newGroupId, {
+          title: sourceGroup.title || '',
+          color: sourceGroup.color
+        });
+      }
+    } catch (err) {
+      console.error('groupToWindow failed:', err);
+    }
+  },
+
+  /**
+   * Group → New Window：移动分组到新窗口（保持分组属性）
+   * @param {number} sourceGroupId - 源分组 ID
+   */
+  async groupToNewWindow(sourceGroupId) {
+    if (!sourceGroupId) return;
+    
+    // 获取源分组信息
+    const sourceGroup = allGroups.find(g => g.id === sourceGroupId);
+    const sourceTabs = allTabs.filter(t => t.groupId === sourceGroupId);
+    
+    if (!sourceTabs.length) return;
+    
+    const tabIds = sourceTabs.map(t => t.id);
+    
+    try {
+      // 用第一个 tab 创建新窗口
+      const newWindow = await chrome.windows.create({ tabId: tabIds[0] });
+      
+      // 移动剩余 tabs
+      if (tabIds.length > 1) {
+        await chrome.tabs.move(tabIds.slice(1), { windowId: newWindow.id, index: -1 });
+      }
+      
+      // 创建分组（保持原属性）
+      const newGroupId = await chrome.tabs.group({ 
+        tabIds, 
+        createProperties: { windowId: newWindow.id } 
+      });
+      
+      // 恢复分组属性
+      if (sourceGroup) {
+        await chrome.tabGroups.update(newGroupId, {
+          title: sourceGroup.title || '',
+          color: sourceGroup.color
+        });
+      }
+      
+      return newWindow.id;
+    } catch (err) {
+      console.error('groupToNewWindow failed:', err);
+    }
+  }
 };
 
 // ============ 初始化 ============
@@ -36,17 +265,40 @@ async function init() {
   // 自动保存已移至 Service Worker，使用 Chrome Alarms API
 }
 
+// ============ 侧边栏同步 ============
+
 // ============ 窗口名称管理 ============
 
 async function loadWindowNames() {
   try {
-    const result = await chrome.storage.local.get(['windowNames', 'windowOrder']);
+    const result = await chrome.storage.local.get([
+      'windowNames', 
+      'windowOrder', 
+      'collapsedWindows', 
+      'collapsedGroups'
+    ]);
     windowNames = result.windowNames || {};
     windowOrder = result.windowOrder || [];
+    collapsedWindows = new Set(result.collapsedWindows || []);
+    collapsedGroups = new Set(result.collapsedGroups || []);
   } catch (error) {
     console.error('Failed to load window names:', error);
     windowNames = {};
     windowOrder = [];
+    collapsedWindows = new Set();
+    collapsedGroups = new Set();
+  }
+}
+
+// 保存折叠状态
+async function saveCollapsedState() {
+  try {
+    await chrome.storage.local.set({
+      collapsedWindows: Array.from(collapsedWindows),
+      collapsedGroups: Array.from(collapsedGroups)
+    });
+  } catch (error) {
+    console.error('Failed to save collapsed state:', error);
   }
 }
 
@@ -129,15 +381,16 @@ function renderWindowSection(windowId, tabs) {
   const isCurrentWindow = tabs.some(t => t.active);
   const defaultLabel = isCurrentWindow ? 'Current Window' : `Window ${windowId}`;
   const windowLabel = windowNames[windowId] || defaultLabel;
+  const isCollapsed = collapsedWindows.has(windowId);
   
   // 按组和未分组整理标签
   const { groups, ungrouped } = organizeTabsByGroup(tabs);
   
   let html = `
-    <div class="window-section" data-window-id="${windowId}">
+    <div class="window-section${isCollapsed ? ' collapsed' : ''}" data-window-id="${windowId}">
       <div class="window-header" data-window-id="${windowId}" draggable="true">
         <span class="window-drag-handle" title="Drag to reorder">⋮⋮</span>
-        <span class="window-collapse-icon">▼</span>
+        <span class="window-collapse-icon">${isCollapsed ? '▶' : '▼'}</span>
         <span class="window-name" title="Double-click to rename">${escapeHtml(windowLabel)}</span>
         <span class="tab-count">${tabs.length} tabs</span>
       </div>
@@ -166,9 +419,10 @@ function renderTabGroup(group) {
   const groupInfo = allGroups.find(g => g.id === group.id);
   const color = groupInfo?.color || 'grey';
   const title = groupInfo?.title || 'Unnamed Group';
+  const isCollapsed = collapsedGroups.has(group.id);
   
   let html = `
-    <div class="tab-group" data-group-id="${group.id}" data-color="${color}">
+    <div class="tab-group${isCollapsed ? ' collapsed' : ''}" data-group-id="${group.id}" data-color="${color}">
       <div class="group-header">
         <svg class="collapse-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
           <path d="M4 6l4 4 4-4"/>
@@ -313,16 +567,47 @@ function bindEvents() {
     renderTabList();
   });
   
-  // 新建标签
-  elements.newTabBtn.addEventListener('click', async () => {
-    await chrome.tabs.create({});
-  });
-  
   // 折叠所有组
   elements.collapseAllBtn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-group').forEach(group => {
-      group.classList.toggle('collapsed');
+    const groups = document.querySelectorAll('.tab-group');
+    // 检查是否有任何展开的组
+    const anyExpanded = Array.from(groups).some(g => !g.classList.contains('collapsed'));
+    
+    groups.forEach(group => {
+      const groupId = parseInt(group.dataset.groupId);
+      
+      if (anyExpanded) {
+        group.classList.add('collapsed');
+        collapsedGroups.add(groupId);
+      } else {
+        group.classList.remove('collapsed');
+        collapsedGroups.delete(groupId);
+      }
     });
+    saveCollapsedState();
+  });
+  
+  // 折叠/展开所有窗口
+  elements.collapseWindowsBtn.addEventListener('click', () => {
+    const windowSections = document.querySelectorAll('.window-section');
+    // 检查是否有任何展开的窗口
+    const anyExpanded = collapsedWindows.size < windowSections.length;
+    
+    windowSections.forEach(section => {
+      const windowId = parseInt(section.dataset.windowId);
+      const collapseIcon = section.querySelector('.window-collapse-icon');
+      
+      if (anyExpanded) {
+        section.classList.add('collapsed');
+        collapsedWindows.add(windowId);
+        if (collapseIcon) collapseIcon.textContent = '▶';
+      } else {
+        section.classList.remove('collapsed');
+        collapsedWindows.delete(windowId);
+        if (collapseIcon) collapseIcon.textContent = '▼';
+      }
+    });
+    saveCollapsedState();
   });
   
   // 会话管理
@@ -336,6 +621,9 @@ function bindEvents() {
   
   // 双击窗口名编辑
   elements.tabList.addEventListener('dblclick', handleWindowNameEdit);
+  
+  // 双击分组名编辑
+  elements.tabList.addEventListener('dblclick', handleGroupNameEdit);
   
   // 右键菜单
   elements.tabList.addEventListener('contextmenu', handleContextMenu);
@@ -389,6 +677,66 @@ function handleWindowNameEdit(e) {
   
   // 失焦保存
   input.addEventListener('blur', saveName);
+}
+
+// ============ 分组名编辑 ============
+
+function handleGroupNameEdit(e) {
+  const groupTitle = e.target.closest('.group-title');
+  if (!groupTitle) return;
+  
+  const groupHeader = groupTitle.closest('.group-header');
+  const tabGroup = groupHeader.closest('.tab-group');
+  const groupId = parseInt(tabGroup.dataset.groupId);
+  
+  // 已经在编辑中
+  if (groupTitle.querySelector('input')) return;
+  
+  const currentName = groupTitle.textContent || '';
+  
+  // 创建输入框
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'group-name-input';
+  input.value = currentName;
+  input.placeholder = 'Group name';
+  
+  // 替换文字为输入框
+  groupTitle.textContent = '';
+  groupTitle.appendChild(input);
+  input.focus();
+  input.select();
+  
+  // 阻止事件冒泡（避免触发折叠）
+  input.addEventListener('click', (e) => e.stopPropagation());
+  
+  // 保存函数
+  const saveName = async () => {
+    const newName = input.value.trim();
+    try {
+      await chrome.tabGroups.update(groupId, { title: newName });
+    } catch (err) {
+      console.error('Failed to update group name:', err);
+    }
+    // 重新渲染
+    renderTabList();
+  };
+  
+  // 回车保存
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      saveName();
+    } else if (e.key === 'Escape') {
+      renderTabList(); // 取消编辑
+    }
+  });
+  
+  // 失焦保存
+  input.addEventListener('blur', saveName);
+  
+  // 阻止双击事件继续冒泡
+  e.stopPropagation();
 }
 
 function handleTabListClick(e) {
@@ -472,15 +820,36 @@ function handleTabListClick(e) {
   const windowHeader = e.target.closest('.window-header');
   if (windowHeader && !e.target.closest('.window-name')) {
     const windowSection = windowHeader.closest('.window-section');
-    windowSection.classList.toggle('collapsed');
+    const windowId = parseInt(windowSection.dataset.windowId);
+    const collapseIcon = windowSection.querySelector('.window-collapse-icon');
+    
+    if (collapsedWindows.has(windowId)) {
+      collapsedWindows.delete(windowId);
+      windowSection.classList.remove('collapsed');
+      if (collapseIcon) collapseIcon.textContent = '▼';
+    } else {
+      collapsedWindows.add(windowId);
+      windowSection.classList.add('collapsed');
+      if (collapseIcon) collapseIcon.textContent = '▶';
+    }
+    saveCollapsedState();
     return;
   }
   
   // 点击组头 - 折叠/展开
   const groupHeader = e.target.closest('.group-header');
-  if (groupHeader) {
+  if (groupHeader && !e.target.closest('.group-title')) {
     const group = groupHeader.closest('.tab-group');
-    group.classList.toggle('collapsed');
+    const groupId = parseInt(group.dataset.groupId);
+    
+    if (collapsedGroups.has(groupId)) {
+      collapsedGroups.delete(groupId);
+      group.classList.remove('collapsed');
+    } else {
+      collapsedGroups.add(groupId);
+      group.classList.add('collapsed');
+    }
+    saveCollapsedState();
     return;
   }
 }
@@ -545,6 +914,24 @@ function bindDragEvents() {
     section.addEventListener('drop', handleDrop);
   });
   
+  // Group 拖拽
+  const groupHeaders = document.querySelectorAll('.group-header');
+  groupHeaders.forEach(header => {
+    header.setAttribute('draggable', 'true');
+    header.addEventListener('dragstart', handleGroupDragStart);
+    header.addEventListener('dragend', handleGroupDragEnd);
+    header.addEventListener('dragover', handleDragOver);
+    header.addEventListener('dragleave', handleDragLeave);
+    header.addEventListener('drop', handleDrop);
+  });
+  
+  // Tab Group 区域也接收拖放
+  const tabGroups = document.querySelectorAll('.tab-group');
+  tabGroups.forEach(group => {
+    group.addEventListener('dragover', handleDragOver);
+    group.addEventListener('drop', handleDrop);
+  });
+  
   // 窗口标题栏拖拽排序 + 接收 tab 拖放
   const windowHeaders = document.querySelectorAll('.window-header');
   windowHeaders.forEach(header => {
@@ -592,25 +979,63 @@ function handleDragEnd(e) {
   dragOverElement = null;
 }
 
+// ============ Group 拖拽 ============
+
+function handleGroupDragStart(e) {
+  const header = e.target.closest('.group-header');
+  if (!header) return;
+  
+  const tabGroup = header.closest('.tab-group');
+  const groupId = parseInt(tabGroup.dataset.groupId);
+  const windowId = parseInt(tabGroup.closest('.window-section').dataset.windowId);
+  
+  draggedGroup = { id: groupId, windowId };
+  tabGroup.classList.add('group-dragging');
+  
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', `group:${groupId}`);
+  e.stopPropagation();
+}
+
+function handleGroupDragEnd(e) {
+  if (!draggedGroup) return;
+  
+  document.querySelectorAll('.group-dragging').forEach(el => el.classList.remove('group-dragging'));
+  document.querySelectorAll('.group-drop-target').forEach(el => el.classList.remove('group-drop-target'));
+  draggedGroup = null;
+}
+
 function handleDragOver(e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
   
   // 清除之前的高亮
-  document.querySelectorAll('.drag-over, .window-drop-target').forEach(el => {
-    el.classList.remove('drag-over', 'window-drop-target');
+  document.querySelectorAll('.drag-over, .window-drop-target, .group-drop-target').forEach(el => {
+    el.classList.remove('drag-over', 'window-drop-target', 'group-drop-target');
   });
   
   const tabItem = e.target.closest('.tab-item');
+  const groupHeader = e.target.closest('.group-header');
+  const tabGroup = e.target.closest('.tab-group');
   const windowSection = e.target.closest('.window-section');
   
-  if (tabItem) {
+  if (groupHeader || (tabGroup && !tabItem)) {
+    // 高亮 group（拖 tab 或 group 到另一个 group）
+    if (tabGroup) {
+      const groupId = parseInt(tabGroup.dataset.groupId);
+      if (!draggedGroup || draggedGroup.id !== groupId) {
+        tabGroup.classList.add('group-drop-target');
+      }
+    }
+  } else if (tabItem) {
     tabItem.classList.add('drag-over');
     dragOverElement = tabItem;
   } else if (windowSection) {
-    // 高亮整个窗口区域（跨窗口拖动时）
+    // 高亮整个窗口区域
     const windowId = parseInt(windowSection.dataset.windowId);
-    if (draggedTab && windowId !== draggedTab.windowId) {
+    const isDifferentWindow = (draggedTab && windowId !== draggedTab.windowId) || 
+                              (draggedGroup && windowId !== draggedGroup.windowId);
+    if (isDifferentWindow) {
       windowSection.classList.add('window-drop-target');
     }
   }
@@ -631,45 +1056,64 @@ function handleDragLeave(e) {
 async function handleDrop(e) {
   e.preventDefault();
   
-  if (!draggedTab) return;
+  if (!draggedTab && !draggedGroup) return;
   
   const targetTabItem = e.target.closest('.tab-item');
+  const targetGroupHeader = e.target.closest('.group-header');
+  const targetGroup = e.target.closest('.tab-group');
   const windowSection = e.target.closest('.window-section');
   const windowHeader = e.target.closest('.window-header');
   
   try {
-    if (targetTabItem) {
-      // 拖到另一个标签上 - 插入到该位置
-      const targetTabId = parseInt(targetTabItem.dataset.tabId);
-      const targetTab = allTabs.find(t => t.id === targetTabId);
+    if (draggedGroup) {
+      // === Group 拖拽 ===
+      const targetGroupId = targetGroup ? parseInt(targetGroup.dataset.groupId) : null;
+      const targetWindowId = windowHeader 
+        ? parseInt(windowHeader.dataset.windowId) 
+        : (windowSection ? parseInt(windowSection.dataset.windowId) : null);
       
-      if (targetTab && draggedTab.id !== targetTabId) {
-        await chrome.tabs.move(draggedTab.id, {
-          windowId: targetTab.windowId,
-          index: targetTab.index,
-        });
+      if (targetGroupHeader || (targetGroup && targetGroupId !== draggedGroup.id)) {
+        // Group → Group: 排序（移动到目标分组位置，保持属性）
+        await MoveOperations.groupToGroup(draggedGroup.id, targetGroupId);
+      } else if (targetWindowId && targetWindowId !== draggedGroup.windowId) {
+        // Group → Window: 移动（保持分组属性）
+        await MoveOperations.groupToWindow(draggedGroup.id, targetWindowId);
       }
-    } else if (windowHeader) {
-      // 拖到窗口标题栏 - 移动到该窗口开头
-      const windowId = parseInt(windowHeader.dataset.windowId);
-      await chrome.tabs.move(draggedTab.id, {
-        windowId: windowId,
-        index: 0,
-      });
-    } else if (windowSection) {
-      // 拖到窗口区域 - 移动到该窗口末尾
-      const windowId = parseInt(windowSection.dataset.windowId);
-      await chrome.tabs.move(draggedTab.id, {
-        windowId: windowId,
-        index: -1,
-      });
+      
+    } else if (draggedTab) {
+      // === Tab 拖拽 ===
+      const tabIds = [draggedTab.id];
+      
+      if (targetGroupHeader || (targetGroup && !targetTabItem)) {
+        // Tab → Group: 加入分组
+        const targetGroupId = parseInt(targetGroup.dataset.groupId);
+        await MoveOperations.tabsToGroup(tabIds, targetGroupId);
+        
+      } else if (targetTabItem) {
+        // Tab → Tab 位置: 插入（特殊处理，不走 MoveOperations）
+        const targetTabId = parseInt(targetTabItem.dataset.tabId);
+        const targetTab = allTabs.find(t => t.id === targetTabId);
+        if (targetTab && draggedTab.id !== targetTabId) {
+          await chrome.tabs.move(draggedTab.id, {
+            windowId: targetTab.windowId,
+            index: targetTab.index,
+          });
+        }
+        
+      } else if (windowHeader || windowSection) {
+        // Tab → Window: 移动到窗口（不分组）
+        const targetWindowId = windowHeader 
+          ? parseInt(windowHeader.dataset.windowId) 
+          : parseInt(windowSection.dataset.windowId);
+        await MoveOperations.tabsToWindow(tabIds, targetWindowId);
+      }
     }
   } catch (err) {
-    console.error('Failed to move tab:', err);
+    console.error('Failed to move:', err);
   }
   
-  document.querySelectorAll('.drag-over, .window-drop-target').forEach(el => {
-    el.classList.remove('drag-over', 'window-drop-target');
+  document.querySelectorAll('.drag-over, .window-drop-target, .group-drop-target').forEach(el => {
+    el.classList.remove('drag-over', 'window-drop-target', 'group-drop-target');
   });
 }
 
@@ -697,6 +1141,21 @@ function handleWindowDragStart(e) {
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', `window:${windowId}`);
   
+  // 记录拖拽前展开的窗口，然后折叠所有窗口
+  windowsExpandedBeforeDrag.clear();
+  const allWindowSections = document.querySelectorAll('.window-section');
+  allWindowSections.forEach(section => {
+    const wId = parseInt(section.dataset.windowId);
+    if (!collapsedWindows.has(wId)) {
+      windowsExpandedBeforeDrag.add(wId);
+    }
+    // 折叠所有窗口
+    section.classList.add('collapsed');
+    collapsedWindows.add(wId);
+    const collapseIcon = section.querySelector('.window-collapse-icon');
+    if (collapseIcon) collapseIcon.textContent = '▶';
+  });
+  
   // 停止事件冒泡，避免触发 tab 拖拽
   e.stopPropagation();
 }
@@ -706,6 +1165,20 @@ function handleWindowDragEnd(e) {
   
   document.querySelectorAll('.window-dragging').forEach(el => el.classList.remove('window-dragging'));
   document.querySelectorAll('.window-drag-over').forEach(el => el.classList.remove('window-drag-over'));
+  
+  // 恢复拖拽前展开的窗口
+  const allWindowSections = document.querySelectorAll('.window-section');
+  allWindowSections.forEach(section => {
+    const wId = parseInt(section.dataset.windowId);
+    if (windowsExpandedBeforeDrag.has(wId)) {
+      section.classList.remove('collapsed');
+      collapsedWindows.delete(wId);
+      const collapseIcon = section.querySelector('.window-collapse-icon');
+      if (collapseIcon) collapseIcon.textContent = '▼';
+    }
+  });
+  windowsExpandedBeforeDrag.clear();
+  
   draggedWindow = null;
 }
 
@@ -787,8 +1260,9 @@ function showWindowContextMenu(x, y, windowId) {
   menu.innerHTML = `
     <div class="context-menu-header">Window (${tabCount} tabs)</div>
     <div class="context-menu-separator"></div>
-    <div class="context-menu-item" data-action="close-window">🗑️ Close Window</div>
-    <div class="context-menu-item" data-action="close-other-windows">Close Other Windows</div>
+    <div class="context-menu-item" data-action="new-tab">➕ New Tab</div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item danger" data-action="close-window">🗑️ Close Window</div>
   `;
   
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
@@ -801,16 +1275,11 @@ function showWindowContextMenu(x, y, windowId) {
     const action = item.dataset.action;
     
     switch (action) {
+      case 'new-tab':
+        await chrome.tabs.create({ windowId });
+        break;
       case 'close-window':
         await chrome.windows.remove(windowId);
-        break;
-      case 'close-other-windows':
-        const allWindows = await chrome.windows.getAll();
-        for (const win of allWindows) {
-          if (win.id !== windowId) {
-            await chrome.windows.remove(win.id);
-          }
-        }
         break;
     }
     
@@ -840,18 +1309,26 @@ function showGroupContextMenu(x, y, groupId, windowId) {
   const groupTabs = allTabs.filter(t => t.groupId === groupId);
   const tabCount = groupTabs.length;
   const groupName = group?.title || 'Group';
+  const tabIds = groupTabs.map(t => t.id);
   
   const menu = document.createElement('div');
   menu.className = 'context-menu';
-  menu.innerHTML = `
+  
+  const menuHtml = `
     <div class="context-menu-header">${escapeHtml(groupName)} (${tabCount} tabs)</div>
     <div class="context-menu-separator"></div>
+    <div class="context-menu-item" data-action="new-tab">➕ New Tab</div>
+    <div class="context-menu-separator"></div>
     <div class="context-menu-item" data-action="ungroup">📂 Ungroup</div>
-    <div class="context-menu-item" data-action="close-group">🗑️ Close Group</div>
+    <div class="context-menu-item has-submenu" data-action="move-to">📦 Move to... ▶</div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item danger" data-action="close-group">🗑️ Close Group</div>
   `;
   
+  menu.innerHTML = menuHtml;
+  
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
-  menu.style.top = `${Math.min(y, window.innerHeight - 120)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - 200)}px`;
   
   menu.addEventListener('click', async (e) => {
     const item = e.target.closest('.context-menu-item');
@@ -860,15 +1337,36 @@ function showGroupContextMenu(x, y, groupId, windowId) {
     const action = item.dataset.action;
     
     switch (action) {
+      case 'new-tab':
+        // 在该分组内创建新标签
+        const newTab = await chrome.tabs.create({ windowId });
+        await chrome.tabs.group({ tabIds: [newTab.id], groupId });
+        hideContextMenu();
+        break;
       case 'ungroup':
-        await chrome.tabs.ungroup(groupTabs.map(t => t.id));
+        await chrome.tabs.ungroup(tabIds);
+        hideContextMenu();
         break;
       case 'close-group':
-        await chrome.tabs.remove(groupTabs.map(t => t.id));
+        await chrome.tabs.remove(tabIds);
+        hideContextMenu();
         break;
     }
-    
-    hideContextMenu();
+  });
+  
+  // 为 "Move to..." 添加悬停事件
+  const moveToItem = menu.querySelector('[data-action="move-to"]');
+  if (moveToItem) {
+    moveToItem.addEventListener('mouseenter', () => {
+      showGroupMoveToSubmenu(moveToItem, tabIds, group, windowId);
+    });
+  }
+  
+  // 悬停在其他项时关闭子菜单
+  menu.querySelectorAll('.context-menu-item:not([data-action="move-to"])').forEach(item => {
+    item.addEventListener('mouseenter', () => {
+      document.querySelectorAll('.context-submenu').forEach(m => m.remove());
+    });
   });
   
   // 遮罩层
@@ -883,7 +1381,121 @@ function showGroupContextMenu(x, y, groupId, windowId) {
   document.body.appendChild(overlay);
   document.body.appendChild(menu);
   
-  menu._cleanup = () => overlay.remove();
+  // Escape 键关闭
+  function onKeyDown(e) {
+    if (e.key === 'Escape') {
+      hideContextMenu();
+    }
+  }
+  document.addEventListener('keydown', onKeyDown);
+  
+  menu._cleanup = () => {
+    document.removeEventListener('keydown', onKeyDown);
+    overlay.remove();
+  };
+}
+
+// Group 的 "Move to..." 子菜单（Group 只能移动到其他窗口，不再有合并选项）
+function showGroupMoveToSubmenu(parentItem, tabIds, sourceGroup, currentWindowId) {
+  document.querySelectorAll('.context-submenu').forEach(m => m.remove());
+  
+  const submenu = document.createElement('div');
+  submenu.className = 'context-menu context-submenu';
+  
+  const windowIds = [...new Set(allTabs.map(t => t.windowId))];
+  
+  let html = `
+    <div class="context-menu-item" data-action="new-window">🆕 New Window</div>
+    <div class="context-menu-separator"></div>
+  `;
+  
+  // 按窗口顺序排序
+  const sortedWindowIds = windowOrder.length > 0 
+    ? windowIds.sort((a, b) => {
+        const iA = windowOrder.indexOf(a);
+        const iB = windowOrder.indexOf(b);
+        if (iA === -1 && iB === -1) return 0;
+        if (iA === -1) return 1;
+        if (iB === -1) return -1;
+        return iA - iB;
+      })
+    : windowIds;
+  
+  for (const windowId of sortedWindowIds) {
+    const windowLabel = windowNames[windowId] || `Window ${windowId}`;
+    const isCurrent = windowId === currentWindowId;
+    
+    // Group 菜单的窗口项没有子菜单（不需要合并选项）
+    html += `
+      <div class="context-menu-item" data-action="window" data-window-id="${windowId}">
+        🪟 ${escapeHtml(windowLabel)}${isCurrent ? ' ✓' : ''}
+      </div>
+    `;
+  }
+  
+  submenu.innerHTML = html;
+  
+  // 定位
+  const parentRect = parentItem.getBoundingClientRect();
+  const menuWidth = 170;
+  
+  if (parentRect.right + menuWidth > window.innerWidth) {
+    submenu.style.left = `${Math.max(5, parentRect.left - menuWidth + 5)}px`;
+  } else {
+    submenu.style.left = `${parentRect.right - 5}px`;
+  }
+  submenu.style.top = `${Math.min(parentRect.top, window.innerHeight - 300)}px`;
+  
+  // 点击处理
+  submenu.addEventListener('click', async (e) => {
+    const item = e.target.closest('.context-menu-item');
+    if (!item) return;
+    
+    const action = item.dataset.action;
+    
+    if (action === 'new-window') {
+      // Group → New Window
+      await MoveOperations.groupToNewWindow(sourceGroup?.id);
+      hideContextMenu();
+    } else if (action === 'window') {
+      // Group → Window（点击窗口名 = 移动整个分组，保持属性）
+      const targetWindowId = parseInt(item.dataset.windowId);
+      await MoveOperations.groupToWindow(sourceGroup?.id, targetWindowId);
+      hideContextMenu();
+    }
+  });
+  
+  // Group 菜单不需要二级菜单（点击窗口名直接移动）
+  // 悬停时关闭可能存在的其他子菜单
+  submenu.querySelectorAll('[data-action="window"]').forEach(item => {
+    item.addEventListener('mouseenter', () => {
+      document.querySelectorAll('.context-submenu-level2').forEach(m => m.remove());
+    });
+  });
+  
+  // 悬停在 New Window 时关闭分组子菜单
+  submenu.querySelectorAll('.context-menu-item:not(.has-submenu)').forEach(item => {
+    item.addEventListener('mouseenter', () => {
+      document.querySelectorAll('.context-submenu-level2').forEach(m => m.remove());
+    });
+  });
+  
+  // 鼠标离开逻辑
+  let leaveTimeout;
+  submenu.addEventListener('mouseleave', () => {
+    leaveTimeout = setTimeout(() => {
+      const level2 = document.querySelector('.context-submenu-level2');
+      if (level2 && level2.matches(':hover')) return;
+      if (parentItem.matches(':hover')) return;
+      document.querySelectorAll('.context-submenu').forEach(m => m.remove());
+    }, 100);
+  });
+  
+  submenu.addEventListener('mouseenter', () => {
+    clearTimeout(leaveTimeout);
+  });
+  
+  document.body.appendChild(submenu);
 }
 
 // 标签右键菜单
@@ -893,41 +1505,39 @@ function showContextMenu(x, y, tab) {
   
   const isMultiSelect = selectedTabIds.size > 1;
   const selectedCount = selectedTabIds.size;
+  const isInGroup = tab.groupId && tab.groupId !== -1;
   
   const menu = document.createElement('div');
   menu.className = 'context-menu';
   
+  let menuHtml = '';
+  
   if (isMultiSelect) {
-    // 多选菜单
-    menu.innerHTML = `
+    menuHtml = `
       <div class="context-menu-header">${selectedCount} tabs selected</div>
-      <div class="context-menu-separator"></div>
-      <div class="context-menu-item" data-action="create-group">📁 Create Group</div>
-      <div class="context-menu-item" data-action="add-to-group">➕ Add to Group...</div>
       <div class="context-menu-separator"></div>
       <div class="context-menu-item" data-action="reload-selected">🔄 Reload All</div>
       <div class="context-menu-item" data-action="pin-selected">📌 Pin All</div>
-      <div class="context-menu-item" data-action="new-window-selected">🪟 Move to new window</div>
+      <div class="context-menu-separator"></div>
+      <div class="context-menu-item has-submenu" data-action="move-to">📦 Move to... ▶</div>
       <div class="context-menu-separator"></div>
       <div class="context-menu-item danger" data-action="close-selected">✕ Close ${selectedCount} tabs</div>
     `;
   } else {
-    // 单选菜单
-    const isInGroup = tab.groupId && tab.groupId !== -1;
-    menu.innerHTML = `
+    menuHtml = `
       <div class="context-menu-item" data-action="reload">🔄 Reload</div>
       <div class="context-menu-item" data-action="duplicate">📋 Duplicate</div>
       <div class="context-menu-item" data-action="pin">${tab.pinned ? '📌 Unpin' : '📌 Pin'}</div>
       <div class="context-menu-separator"></div>
-      <div class="context-menu-item" data-action="create-group">📁 Create Group</div>
-      <div class="context-menu-item" data-action="add-to-group">➕ Add to Group...</div>
+      <div class="context-menu-item has-submenu" data-action="move-to">📦 Move to... ▶</div>
       ${isInGroup ? '<div class="context-menu-item" data-action="remove-from-group">📤 Remove from Group</div>' : ''}
-      <div class="context-menu-item" data-action="new-window">🪟 Move to new window</div>
       <div class="context-menu-separator"></div>
       <div class="context-menu-item" data-action="close-others">Close other tabs</div>
       <div class="context-menu-item danger" data-action="close">✕ Close tab</div>
     `;
   }
+  
+  menu.innerHTML = menuHtml;
   
   // 定位
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
@@ -940,6 +1550,7 @@ function showContextMenu(x, y, tab) {
     
     const action = item.dataset.action;
     const selectedIds = Array.from(selectedTabIds);
+    const tabIds = selectedIds.length > 0 ? selectedIds : [tab.id];
     
     switch (action) {
       // 单选操作
@@ -951,9 +1562,6 @@ function showContextMenu(x, y, tab) {
         break;
       case 'pin':
         await chrome.tabs.update(tab.id, { pinned: !tab.pinned });
-        break;
-      case 'new-window':
-        await chrome.windows.create({ tabId: tab.id });
         break;
       case 'close-others':
         const otherTabs = allTabs.filter(t => t.id !== tab.id && t.windowId === tab.windowId && !t.pinned);
@@ -974,36 +1582,21 @@ function showContextMenu(x, y, tab) {
           await chrome.tabs.update(id, { pinned: true });
         }
         break;
-      case 'new-window-selected':
-        const newWindow = await chrome.windows.create({ tabId: selectedIds[0] });
-        for (let i = 1; i < selectedIds.length; i++) {
-          await chrome.tabs.move(selectedIds[i], { windowId: newWindow.id, index: -1 });
-        }
-        break;
       case 'close-selected':
         await chrome.tabs.remove(selectedIds);
         break;
       
-      // 分组操作
-      case 'create-group':
-        await createTabGroup(selectedIds.length > 0 ? selectedIds : [tab.id]);
-        break;
-      case 'add-to-group':
-        // 单选或多选都用 showAddToGroupMenu
-        const tabIdsToGroup = selectedIds.length > 0 ? selectedIds : [tab.id];
-        await showAddToGroupMenu(x, y, tabIdsToGroup);
-        return; // 不关闭菜单，显示子菜单
+      // 从分组移除
       case 'remove-from-group':
         await chrome.tabs.ungroup([tab.id]);
         break;
     }
     
     selectedTabIds.clear();
-    
     hideContextMenu();
   });
   
-  // 创建透明遮罩层，点击遮罩关闭菜单
+  // 创建透明遮罩层
   const overlay = document.createElement('div');
   overlay.className = 'context-menu-overlay';
   overlay.addEventListener('click', hideContextMenu);
@@ -1015,6 +1608,23 @@ function showContextMenu(x, y, tab) {
   document.body.appendChild(overlay);
   document.body.appendChild(menu);
   
+  // 为 "Move to..." 添加悬停事件
+  const moveToItem = menu.querySelector('[data-action="move-to"]');
+  if (moveToItem) {
+    const tabIds = Array.from(selectedTabIds).length > 0 ? Array.from(selectedTabIds) : [tab.id];
+    
+    moveToItem.addEventListener('mouseenter', () => {
+      showMoveToSubmenu(moveToItem, tabIds, tab.windowId);
+    });
+  }
+  
+  // 悬停在主菜单的其他项时，关闭所有子菜单
+  menu.querySelectorAll('.context-menu-item:not([data-action="move-to"])').forEach(item => {
+    item.addEventListener('mouseenter', () => {
+      document.querySelectorAll('.context-submenu').forEach(m => m.remove());
+    });
+  });
+  
   // Escape 键关闭
   function onKeyDown(e) {
     if (e.key === 'Escape') {
@@ -1023,15 +1633,227 @@ function showContextMenu(x, y, tab) {
   }
   document.addEventListener('keydown', onKeyDown);
   
-  // 保存清理函数
   menu._cleanup = () => {
     document.removeEventListener('keydown', onKeyDown);
     overlay.remove();
   };
 }
 
+// 显示 "Move to..." 子菜单
+function showMoveToSubmenu(parentItem, tabIds, currentWindowId) {
+  // 移除已有子菜单
+  document.querySelectorAll('.context-submenu').forEach(m => m.remove());
+  
+  const submenu = document.createElement('div');
+  submenu.className = 'context-menu context-submenu';
+  submenu._parentItem = parentItem;
+  submenu._tabIds = tabIds;
+  
+  // 获取所有窗口
+  const windowIds = [...new Set(allTabs.map(t => t.windowId))];
+  
+  let html = `
+    <div class="context-menu-item" data-action="new-window">🆕 New Window</div>
+    <div class="context-menu-separator"></div>
+  `;
+  
+  // 按窗口顺序排序
+  const sortedWindowIds = windowOrder.length > 0 
+    ? windowIds.sort((a, b) => {
+        const iA = windowOrder.indexOf(a);
+        const iB = windowOrder.indexOf(b);
+        if (iA === -1 && iB === -1) return 0;
+        if (iA === -1) return 1;
+        if (iB === -1) return -1;
+        return iA - iB;
+      })
+    : windowIds;
+  
+  for (const windowId of sortedWindowIds) {
+    const windowLabel = windowNames[windowId] || `Window ${windowId}`;
+    const isCurrent = windowId === currentWindowId;
+    
+    html += `
+      <div class="context-menu-item has-submenu" data-action="window" data-window-id="${windowId}">
+        🪟 ${escapeHtml(windowLabel)}${isCurrent ? ' ✓' : ''} ▶
+      </div>
+    `;
+  }
+  
+  submenu.innerHTML = html;
+  
+  // 定位到父项右侧（空间不足时显示在左侧）
+  const parentRect = parentItem.getBoundingClientRect();
+  const menuWidth = 170;
+  
+  if (parentRect.right + menuWidth > window.innerWidth) {
+    // 右侧空间不足，显示在左侧
+    submenu.style.left = `${Math.max(5, parentRect.left - menuWidth + 5)}px`;
+  } else {
+    submenu.style.left = `${parentRect.right - 5}px`;
+  }
+  submenu.style.top = `${Math.min(parentRect.top, window.innerHeight - 300)}px`;
+  
+  // 点击处理
+  submenu.addEventListener('click', async (e) => {
+    const item = e.target.closest('.context-menu-item');
+    if (!item) return;
+    
+    const action = item.dataset.action;
+    
+    if (action === 'new-window') {
+      // Tab(s) → New Window
+      await MoveOperations.tabsToNewWindow(tabIds);
+      selectedTabIds.clear();
+      hideContextMenu();
+    } else if (action === 'window') {
+      // Tab(s) → Window（点击窗口名 = 移动到该窗口，不分组）
+      const windowId = parseInt(item.dataset.windowId);
+      await MoveOperations.tabsToWindow(tabIds, windowId);
+      selectedTabIds.clear();
+      hideContextMenu();
+    }
+  });
+  
+  // 悬停在有子菜单的项 → 显示第二级菜单（选择分组）
+  submenu.querySelectorAll('[data-action="window"]').forEach(item => {
+    item.addEventListener('mouseenter', () => {
+      const windowId = parseInt(item.dataset.windowId);
+      showWindowGroupsSubmenu(item, tabIds, windowId);
+    });
+  });
+  
+  // 悬停在没有子菜单的项（如 New Window）→ 关闭第二级菜单
+  submenu.querySelectorAll('.context-menu-item:not(.has-submenu)').forEach(item => {
+    item.addEventListener('mouseenter', () => {
+      document.querySelectorAll('.context-submenu-level2').forEach(m => m.remove());
+    });
+  });
+  
+  // 鼠标离开一级菜单区域 → 关闭一级和二级菜单（延迟检查，避免移动到子菜单时误关）
+  let leaveTimeout;
+  submenu.addEventListener('mouseleave', () => {
+    leaveTimeout = setTimeout(() => {
+      // 检查鼠标是否在二级菜单内
+      const level2 = document.querySelector('.context-submenu-level2');
+      if (level2 && level2.matches(':hover')) return;
+      
+      // 检查鼠标是否回到了主菜单的 Move to 项
+      if (parentItem.matches(':hover')) return;
+      
+      // 关闭一级和二级菜单
+      document.querySelectorAll('.context-submenu').forEach(m => m.remove());
+    }, 100);
+  });
+  
+  submenu.addEventListener('mouseenter', () => {
+    clearTimeout(leaveTimeout);
+  });
+  
+  document.body.appendChild(submenu);
+}
+
+// 显示窗口内的分组子菜单
+function showWindowGroupsSubmenu(parentItem, tabIds, targetWindowId) {
+  // 移除同级子菜单
+  document.querySelectorAll('.context-submenu-level2').forEach(m => m.remove());
+  
+  const submenu = document.createElement('div');
+  submenu.className = 'context-menu context-submenu context-submenu-level2';
+  
+  // 获取该窗口的分组
+  const windowGroups = allGroups.filter(g => 
+    allTabs.some(t => t.windowId === targetWindowId && t.groupId === g.id)
+  );
+  
+  let html = `
+    <div class="context-menu-item" data-action="new-group">🆕 New Group</div>
+  `;
+  
+  if (windowGroups.length > 0) {
+    html += `<div class="context-menu-separator"></div>`;
+    for (const group of windowGroups) {
+      const groupTitle = group.title || 'Unnamed Group';
+      html += `
+        <div class="context-menu-item" data-action="to-group" data-group-id="${group.id}">
+          <span class="group-color-dot" style="background: var(--group-${group.color})"></span>
+          ${escapeHtml(groupTitle)}
+        </div>
+      `;
+    }
+  }
+  
+  submenu.innerHTML = html;
+  
+  // 先添加到 DOM（隐藏），然后计算位置
+  submenu.style.visibility = 'hidden';
+  document.body.appendChild(submenu);
+  
+  // 定位 - 确保不超出屏幕，跟随 parentItem 的实际位置
+  const parentRect = parentItem.getBoundingClientRect();
+  const submenuRect = submenu.getBoundingClientRect();
+  const menuWidth = submenuRect.width || 160;
+  const menuHeight = submenuRect.height || 150;
+  
+  // 水平定位：优先右侧，空间不足时显示在左侧
+  let left;
+  if (parentRect.right + menuWidth > window.innerWidth) {
+    left = Math.max(5, parentRect.left - menuWidth + 5);
+  } else {
+    left = parentRect.right - 5;
+  }
+  
+  // 垂直定位：与 parentItem 对齐，但确保不超出屏幕底部
+  let top = parentRect.top;
+  if (top + menuHeight > window.innerHeight - 10) {
+    top = Math.max(10, window.innerHeight - menuHeight - 10);
+  }
+  
+  submenu.style.left = `${left}px`;
+  submenu.style.top = `${top}px`;
+  submenu.style.visibility = 'visible';
+  
+  // 处理点击
+  submenu.addEventListener('click', async (e) => {
+    const item = e.target.closest('.context-menu-item');
+    if (!item) return;
+    
+    const action = item.dataset.action;
+    
+    if (action === 'new-group') {
+      // Tab(s) → New Group
+      await MoveOperations.tabsToNewGroup(tabIds, targetWindowId);
+    } else if (action === 'to-group') {
+      // Tab(s) → Group
+      const groupId = parseInt(item.dataset.groupId);
+      await MoveOperations.tabsToGroup(tabIds, groupId);
+    }
+    
+    selectedTabIds.clear();
+    hideContextMenu();
+  });
+  
+  // 鼠标离开二级菜单 → 关闭自己（延迟检查）
+  let leaveTimeout;
+  submenu.addEventListener('mouseleave', () => {
+    leaveTimeout = setTimeout(() => {
+      // 检查鼠标是否回到了一级菜单的对应项
+      if (parentItem.matches(':hover')) return;
+      submenu.remove();
+    }, 100);
+  });
+  
+  submenu.addEventListener('mouseenter', () => {
+    clearTimeout(leaveTimeout);
+  });
+}
+
 function hideContextMenu() {
-  const menu = document.querySelector('.context-menu');
+  // 移除所有子菜单
+  document.querySelectorAll('.context-submenu').forEach(m => m.remove());
+  
+  // 移除主菜单
+  const menu = document.querySelector('.context-menu:not(.context-submenu)');
   if (menu) {
     if (menu._cleanup) menu._cleanup();
     menu.remove();
@@ -1591,13 +2413,28 @@ function setupScrollSync() {
   
   // 监听其他窗口的滚动位置变化
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes.scrollPosition) {
+    if (area !== 'local') return;
+    
+    // 同步滚动位置
+    if (changes.scrollPosition) {
       const newPosition = changes.scrollPosition.newValue;
       if (Math.abs(container.scrollTop - newPosition) > 5) {
         isScrollSyncing = true;
         container.scrollTop = newPosition;
         setTimeout(() => { isScrollSyncing = false; }, 50);
       }
+    }
+    
+    // 同步折叠状态
+    if (changes.collapsedWindows || changes.collapsedGroups) {
+      if (changes.collapsedWindows) {
+        collapsedWindows = new Set(changes.collapsedWindows.newValue || []);
+      }
+      if (changes.collapsedGroups) {
+        collapsedGroups = new Set(changes.collapsedGroups.newValue || []);
+      }
+      // 重新渲染以应用新的折叠状态
+      renderTabList();
     }
   });
 }
