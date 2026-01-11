@@ -27,6 +27,7 @@ const elements = {
   collapseWindowsBtn: document.getElementById('collapseWindowsBtn'),
   sessionsBtn: document.getElementById('sessionsBtn'),
   settingsBtn: document.getElementById('settingsBtn'),
+  syncSidebarBtn: document.getElementById('syncSidebarBtn'),
 };
 
 // ============ 统一 Move 操作 ============
@@ -262,10 +263,126 @@ async function init() {
   bindEvents();
   listenToTabChanges();
   setupScrollSync();
+  setupSidebarSync();
   // 自动保存已移至 Service Worker，使用 Chrome Alarms API
 }
 
 // ============ 侧边栏同步 ============
+
+// ============ 侧边栏同步 ============
+
+let sidebarPort = null;
+
+// 图标 SVG
+const iconOpen = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+  <path d="M1 4h6v4H1zM9 4h6v4H9zM1 9h6v4H1zM9 9h6v4H9z"/>
+</svg>`;
+const iconClose = `<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+  <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="2" fill="none"/>
+</svg>`;
+
+// 更新按钮图标
+function updateSyncButtonIcon(allConnected) {
+  if (allConnected) {
+    elements.syncSidebarBtn.innerHTML = iconClose;
+    elements.syncSidebarBtn.title = 'Close all sidebars';
+  } else {
+    elements.syncSidebarBtn.innerHTML = iconOpen;
+    elements.syncSidebarBtn.title = 'Open all sidebars';
+  }
+}
+
+function connectToBackground() {
+  // 连接到 background
+  sidebarPort = chrome.runtime.connect({ name: 'sidepanel' });
+  
+  chrome.windows.getCurrent().then(win => {
+    if (sidebarPort) {
+      sidebarPort.postMessage({ type: 'register', windowId: win.id });
+    }
+  });
+  
+  // 监听来自 background 的消息
+  sidebarPort.onMessage.addListener(async (msg) => {
+    if (msg.type === 'close') {
+      window.close();
+      return;
+    }
+    
+    if (msg.type === 'connectedCount') {
+      const { connected, total } = msg;
+      console.log(`[Sidebar Sync] Connected: ${connected}/${total}`);
+      
+      const allConnected = connected >= total;
+      updateSyncButtonIcon(allConnected);
+      
+      if (allConnected) {
+        // 所有窗口都已连接，关闭所有
+        sidebarPort.postMessage({ type: 'closeAllSidebars' });
+      } else {
+        // 还有窗口未连接，打开它们
+        const windows = await chrome.windows.getAll({ windowTypes: ['normal'] });
+        const currentWindow = await chrome.windows.getCurrent();
+        
+        for (const win of windows) {
+          if (win.id !== currentWindow.id) {
+            try {
+              await chrome.sidePanel.open({ windowId: win.id });
+            } catch (err) {
+              console.log(`Could not open window ${win.id}:`, err.message);
+            }
+          }
+        }
+        // 打开后只更新图标（不执行操作）
+        setTimeout(() => {
+          if (sidebarPort) {
+            sidebarPort.postMessage({ type: 'getConnectedCountOnly' });
+          }
+        }, 500);
+      }
+    }
+    
+    // 仅更新图标状态（不执行操作）
+    if (msg.type === 'connectedCountUpdate') {
+      const { connected, total } = msg;
+      updateSyncButtonIcon(connected >= total);
+    }
+  });
+  
+  // 初始化时查询状态以设置正确图标
+  setTimeout(() => {
+    if (sidebarPort) {
+      sidebarPort.postMessage({ type: 'getConnectedCountOnly' });
+    }
+  }, 300);
+  
+  sidebarPort.onDisconnect.addListener(() => {
+    console.log('[Sidebar Sync] Disconnected, will reconnect...');
+    sidebarPort = null;
+    // 1秒后尝试重连
+    setTimeout(() => {
+      connectToBackground();
+    }, 1000);
+  });
+}
+
+function setupSidebarSync() {
+  connectToBackground();
+  
+  // 同步打开/关闭按钮（toggle：点击切换所有窗口侧边栏状态）
+  elements.syncSidebarBtn.addEventListener('click', async () => {
+    // 确保连接存在
+    if (!sidebarPort) {
+      connectToBackground();
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    
+    if (sidebarPort) {
+      // 查询当前连接状态
+      sidebarPort.postMessage({ type: 'getConnectedCount' });
+    }
+  });
+}
 
 // ============ 窗口名称管理 ============
 
