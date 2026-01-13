@@ -156,19 +156,19 @@ body {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: #ffffff;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  background: var(--accent);
-  margin-top: 8px;
+  background: rgba(0, 120, 212, 0.75);
+  border-left: 4px solid #3ba0ff;
+  margin-top: 6px;
   cursor: pointer;
   user-select: none;
+  border-radius: 0 4px 4px 0;
 }
 
 .window-header:hover {
-  background: var(--accent-hover);
+  background: rgba(0, 120, 212, 0.85);
 }
 
 .window-header .window-icon {
@@ -178,18 +178,22 @@ body {
 .window-header .tab-count {
   margin-left: auto;
   font-weight: normal;
-  opacity: 0.8;
+  font-size: 11px;
+  color: var(--accent);
+  background: rgba(0, 120, 212, 0.15);
+  padding: 2px 8px;
+  border-radius: 10px;
 }
 
 .window-header .window-name {
   cursor: text;
-  padding: 2px 4px;
+  padding: 2px 6px;
   border-radius: 3px;
   transition: background 0.15s;
 }
 
 .window-header .window-name:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .window-name-input {
@@ -219,25 +223,6 @@ body {
   width: 100px;
 }
 
-/* Window Drag Handle */
-.window-drag-handle {
-  cursor: grab;
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 10px;
-  letter-spacing: 1px;
-  transition: color 0.15s;
-  user-select: none;
-  padding: 0 2px;
-}
-
-.window-header:hover .window-drag-handle {
-  color: #ffffff;
-}
-
-.window-drag-handle:active {
-  cursor: grabbing;
-}
-
 /* Window Dragging State */
 .window-section.window-dragging {
   opacity: 0.5;
@@ -262,20 +247,51 @@ body {
 
 /* Tab Group */
 .tab-group {
-  border-left: 3px solid var(--group-blue);
-  margin: 2px 0 2px 8px;
+  margin: 2px 0 2px 4px;
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.15);
+  border-left: 3px solid rgba(128, 128, 128, 0.6);
 }
 
-.tab-group[data-color="grey"] { border-color: var(--group-grey); }
-.tab-group[data-color="blue"] { border-color: var(--group-blue); }
-.tab-group[data-color="red"] { border-color: var(--group-red); }
-.tab-group[data-color="yellow"] { border-color: var(--group-yellow); }
-.tab-group[data-color="green"] { border-color: var(--group-green); }
-.tab-group[data-color="pink"] { border-color: var(--group-pink); }
-.tab-group[data-color="purple"] { border-color: var(--group-purple); }
-.tab-group[data-color="cyan"] { border-color: var(--group-cyan); }
-.tab-group[data-color="orange"] { border-color: var(--group-orange); }
+/* Group 背景色 + 左边框 - 使用各颜色的半透明版本 */
+.tab-group[data-color="grey"] { 
+  background: rgba(128, 128, 128, 0.15); 
+  border-left-color: rgba(128, 128, 128, 0.6);
+}
+.tab-group[data-color="blue"] { 
+  background: rgba(66, 133, 244, 0.15); 
+  border-left-color: rgba(66, 133, 244, 0.7);
+}
+.tab-group[data-color="red"] { 
+  background: rgba(234, 67, 53, 0.15); 
+  border-left-color: rgba(234, 67, 53, 0.7);
+}
+.tab-group[data-color="yellow"] { 
+  background: rgba(251, 188, 4, 0.12); 
+  border-left-color: rgba(251, 188, 4, 0.7);
+}
+.tab-group[data-color="green"] { 
+  background: rgba(52, 168, 83, 0.15); 
+  border-left-color: rgba(52, 168, 83, 0.7);
+}
+.tab-group[data-color="pink"] { 
+  background: rgba(233, 30, 99, 0.15); 
+  border-left-color: rgba(233, 30, 99, 0.7);
+}
+.tab-group[data-color="purple"] { 
+  background: rgba(156, 39, 176, 0.15); 
+  border-left-color: rgba(156, 39, 176, 0.7);
+}
+.tab-group[data-color="cyan"] { 
+  background: rgba(0, 188, 212, 0.15); 
+  border-left-color: rgba(0, 188, 212, 0.7);
+}
+.tab-group[data-color="orange"] { 
+  background: rgba(255, 152, 0, 0.15); 
+  border-left-color: rgba(255, 152, 0, 0.7);
+}
 
+/* 层次 2: Group bar */
 .group-header {
   display: flex;
   align-items: center;
@@ -288,7 +304,7 @@ body {
 }
 
 .group-header:hover {
-  background: var(--bg-hover);
+  filter: brightness(1.2);
 }
 
 .group-header .collapse-icon {
@@ -337,8 +353,27 @@ body {
   background: var(--bg-hover);
 }
 
+/* 层次 4: 其他窗口的 active tab - 较淡高亮 */
 .tab-item.active {
-  background: var(--bg-active);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.tab-item.active .tab-title {
+  color: var(--text-primary);
+}
+
+/* 层次 3: 当前窗口的 active tab - 绿色高亮 */
+.tab-item.current-active {
+  background: rgba(76, 175, 80, 0.25);
+}
+
+.tab-item.current-active .tab-title {
+  color: #a5d6a7;
+  font-weight: 500;
+}
+
+.tab-item.current-active:hover {
+  background: rgba(76, 175, 80, 0.35);
 }
 
 .tab-item.dragging {
@@ -405,10 +440,6 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.tab-item.active .tab-title {
-  color: var(--text-active);
 }
 
 .tab-item .tab-close {

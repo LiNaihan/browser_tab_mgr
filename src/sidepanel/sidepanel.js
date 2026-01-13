@@ -14,9 +14,10 @@ let draggedTab = null;
 let draggedWindow = null; // 拖拽中的窗口
 let draggedGroup = null; // 拖拽中的分组
 let dragOverElement = null;
-let windowsExpandedBeforeDrag = new Set(); // 拖拽窗口前展开的窗口
+let scrollPositionBeforeDrag = 0; // 拖拽窗口前的滚动位置
 let selectedTabIds = new Set(); // 多选的标签 ID
 let lastSelectedTabId = null;  // 上次选中的标签（用于 Shift 范围选择）
+let currentWindowId = null; // 当前 sidepanel 所在的窗口 ID
 
 // DOM Elements
 const elements = {
@@ -258,12 +259,17 @@ const MoveOperations = {
 // ============ 初始化 ============
 
 async function init() {
+  // 获取当前窗口 ID
+  const win = await chrome.windows.getCurrent();
+  currentWindowId = win.id;
+  
   await loadWindowNames();
   await loadTabs();
   bindEvents();
   listenToTabChanges();
   setupScrollSync();
   setupSidebarSync();
+  setupWindowDragDelegation(); // 使用事件委托处理 window 拖拽
   // 自动保存已移至 Service Worker，使用 Chrome Alarms API
 }
 
@@ -448,6 +454,10 @@ async function loadTabs() {
 // ============ 渲染 ============
 
 function renderTabList() {
+  // 保存当前滚动位置
+  const container = document.querySelector('.tab-list-container');
+  const scrollTop = container ? container.scrollTop : 0;
+  
   const filteredTabs = filterTabs(allTabs, searchQuery);
   
   if (filteredTabs.length === 0) {
@@ -472,6 +482,11 @@ function renderTabList() {
   }
   
   elements.tabList.innerHTML = html;
+  
+  // 恢复滚动位置
+  if (container) {
+    container.scrollTop = scrollTop;
+  }
   
   // 绑定拖拽事件
   bindDragEvents();
@@ -506,7 +521,6 @@ function renderWindowSection(windowId, tabs) {
   let html = `
     <div class="window-section${isCollapsed ? ' collapsed' : ''}" data-window-id="${windowId}">
       <div class="window-header" data-window-id="${windowId}" draggable="true">
-        <span class="window-drag-handle" title="Drag to reorder">⋮⋮</span>
         <span class="window-collapse-icon">${isCollapsed ? '▶' : '▼'}</span>
         <span class="window-name" title="Double-click to rename">${escapeHtml(windowLabel)}</span>
         <span class="tab-count">${tabs.length} tabs</span>
@@ -570,9 +584,11 @@ function renderTabItem(tab) {
   const activeClass = tab.active ? 'active' : '';
   const pinnedClass = tab.pinned ? 'pinned' : '';
   const selectedClass = selectedTabIds.has(tab.id) ? 'selected' : '';
+  // 当前窗口的 active tab 额外高亮
+  const currentActiveClass = (tab.active && tab.windowId === currentWindowId) ? 'current-active' : '';
   
   return `
-    <div class="tab-item ${activeClass} ${pinnedClass} ${selectedClass}" 
+    <div class="tab-item ${activeClass} ${pinnedClass} ${selectedClass} ${currentActiveClass}" 
          data-tab-id="${tab.id}" 
          data-window-id="${tab.windowId}"
          data-index="${tab.index}"
@@ -1054,8 +1070,6 @@ function bindDragEvents() {
   // 窗口标题栏拖拽排序 + 接收 tab 拖放
   const windowHeaders = document.querySelectorAll('.window-header');
   windowHeaders.forEach(header => {
-    header.addEventListener('dragstart', handleWindowDragStart);
-    header.addEventListener('dragend', handleWindowDragEnd);
     header.addEventListener('dragover', (e) => {
       // 同时处理窗口拖拽和 tab 拖放
       if (draggedWindow) {
@@ -1079,6 +1093,30 @@ function bindDragEvents() {
       }
     });
   });
+}
+
+// 使用事件委托处理 window 拖拽（在 tabList 上监听）
+function setupWindowDragDelegation() {
+  const tabList = document.getElementById('tabList');
+  if (!tabList) return;
+  
+  tabList.addEventListener('dragstart', (e) => {
+    // 检查是否来自 window-header（但不是其内部的 tab 或 group）
+    const windowHeader = e.target.closest('.window-header');
+    const tabItem = e.target.closest('.tab-item');
+    const groupHeader = e.target.closest('.group-header');
+    
+    // 如果在 window-header 内，且不在 tab-item 或 group-header 内
+    if (windowHeader && !tabItem && !groupHeader) {
+      handleWindowDragStart(e);
+    }
+  }, true); // 使用捕获阶段，确保先于其他处理器
+  
+  tabList.addEventListener('dragend', (e) => {
+    if (draggedWindow) {
+      handleWindowDragEnd(e);
+    }
+  }, true);
 }
 
 function handleDragStart(e) {
@@ -1239,14 +1277,22 @@ async function handleDrop(e) {
 // ============ 窗口拖拽排序 ============
 
 function handleWindowDragStart(e) {
-  // 只从拖拽手柄开始拖拽
-  const dragHandle = e.target.closest('.window-drag-handle');
   const header = e.target.closest('.window-header');
-  
   if (!header) return;
   
-  // 如果点击的是窗口名称区域，不启动拖拽（允许编辑）
+  // 如果从窗口名称区域开始拖拽，取消（因为要支持双击编辑）
   if (e.target.closest('.window-name')) {
+    e.preventDefault();
+    return;
+  }
+  
+  // 只允许在全部窗口折叠时拖动（临时方案，展开时拖动有 bug）
+  const allWindowSections = document.querySelectorAll('.window-section');
+  const allCollapsed = Array.from(allWindowSections).every(section => 
+    section.classList.contains('collapsed')
+  );
+  
+  if (!allCollapsed) {
     e.preventDefault();
     return;
   }
@@ -1260,23 +1306,13 @@ function handleWindowDragStart(e) {
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', `window:${windowId}`);
   
-  // 记录拖拽前展开的窗口，然后折叠所有窗口
-  windowsExpandedBeforeDrag.clear();
-  const allWindowSections = document.querySelectorAll('.window-section');
-  allWindowSections.forEach(section => {
-    const wId = parseInt(section.dataset.windowId);
-    if (!collapsedWindows.has(wId)) {
-      windowsExpandedBeforeDrag.add(wId);
-    }
-    // 折叠所有窗口
-    section.classList.add('collapsed');
-    collapsedWindows.add(wId);
-    const collapseIcon = section.querySelector('.window-collapse-icon');
-    if (collapseIcon) collapseIcon.textContent = '▶';
-  });
+  // 保存拖拽前的滚动位置
+  const container = document.querySelector('.tab-list-container');
+  scrollPositionBeforeDrag = container ? container.scrollTop : 0;
   
-  // 停止事件冒泡，避免触发 tab 拖拽
+  // 阻止事件继续传播，避免触发 tab/group 的拖拽
   e.stopPropagation();
+  e.stopImmediatePropagation();
 }
 
 function handleWindowDragEnd(e) {
@@ -1285,18 +1321,11 @@ function handleWindowDragEnd(e) {
   document.querySelectorAll('.window-dragging').forEach(el => el.classList.remove('window-dragging'));
   document.querySelectorAll('.window-drag-over').forEach(el => el.classList.remove('window-drag-over'));
   
-  // 恢复拖拽前展开的窗口
-  const allWindowSections = document.querySelectorAll('.window-section');
-  allWindowSections.forEach(section => {
-    const wId = parseInt(section.dataset.windowId);
-    if (windowsExpandedBeforeDrag.has(wId)) {
-      section.classList.remove('collapsed');
-      collapsedWindows.delete(wId);
-      const collapseIcon = section.querySelector('.window-collapse-icon');
-      if (collapseIcon) collapseIcon.textContent = '▼';
-    }
-  });
-  windowsExpandedBeforeDrag.clear();
+  // 恢复拖拽前的滚动位置
+  const container = document.querySelector('.tab-list-container');
+  if (container) {
+    container.scrollTop = scrollPositionBeforeDrag;
+  }
   
   draggedWindow = null;
 }
