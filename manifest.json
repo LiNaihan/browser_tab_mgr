@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Tabar - Vertical Tab Manager",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Manage tabs in sidebar with drag & drop, tab groups, and session saving",
   "permissions": [
     "tabs",
