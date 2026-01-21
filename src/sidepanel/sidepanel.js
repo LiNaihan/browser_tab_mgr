@@ -29,6 +29,7 @@ const elements = {
   sessionsBtn: document.getElementById('sessionsBtn'),
   settingsBtn: document.getElementById('settingsBtn'),
   syncSidebarBtn: document.getElementById('syncSidebarBtn'),
+  locateCurrentBtn: document.getElementById('locateCurrentBtn'),
 };
 
 // ============ 统一 Move 操作 ============
@@ -584,11 +585,12 @@ function renderTabItem(tab) {
   const activeClass = tab.active ? 'active' : '';
   const pinnedClass = tab.pinned ? 'pinned' : '';
   const selectedClass = selectedTabIds.has(tab.id) ? 'selected' : '';
+  const discardedClass = tab.discarded ? 'discarded' : '';
   // 当前窗口的 active tab 额外高亮
   const currentActiveClass = (tab.active && tab.windowId === currentWindowId) ? 'current-active' : '';
   
   return `
-    <div class="tab-item ${activeClass} ${pinnedClass} ${selectedClass} ${currentActiveClass}" 
+    <div class="tab-item ${activeClass} ${pinnedClass} ${selectedClass} ${currentActiveClass} ${discardedClass}" 
          data-tab-id="${tab.id}" 
          data-window-id="${tab.windowId}"
          data-index="${tab.index}"
@@ -698,6 +700,48 @@ function bindEvents() {
   elements.searchInput.addEventListener('input', (e) => {
     searchQuery = e.target.value;
     renderTabList();
+  });
+  
+  // 定位到当前 tab
+  elements.locateCurrentBtn.addEventListener('click', async () => {
+    try {
+      const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!currentTab) return;
+      
+      // 确保当前窗口和 group 展开
+      const windowSection = document.querySelector(`.window-section[data-window-id="${currentTab.windowId}"]`);
+      if (windowSection) {
+        windowSection.classList.remove('collapsed');
+        collapsedWindows.delete(currentTab.windowId);
+        const collapseIcon = windowSection.querySelector('.window-collapse-icon');
+        if (collapseIcon) collapseIcon.textContent = '▼';
+      }
+      
+      if (currentTab.groupId !== -1) {
+        const tabGroup = document.querySelector(`.tab-group[data-group-id="${currentTab.groupId}"]`);
+        if (tabGroup) {
+          tabGroup.classList.remove('collapsed');
+          collapsedGroups.delete(currentTab.groupId);
+        }
+      }
+      
+      await saveCollapsedState();
+      
+      // 滚动到当前 tab
+      const tabItem = document.querySelector(`.tab-item[data-tab-id="${currentTab.id}"]`);
+      if (tabItem) {
+        tabItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // 闪烁提示
+        tabItem.style.transition = 'none';
+        tabItem.style.background = 'rgba(76, 175, 80, 0.5)';
+        setTimeout(() => {
+          tabItem.style.transition = 'background 0.5s';
+          tabItem.style.background = '';
+        }, 100);
+      }
+    } catch (error) {
+      console.error('Failed to locate current tab:', error);
+    }
   });
   
   // 折叠所有组
@@ -1410,6 +1454,9 @@ function showWindowContextMenu(x, y, windowId) {
     <div class="context-menu-separator"></div>
     <div class="context-menu-item" data-action="new-tab">➕ New Tab</div>
     <div class="context-menu-separator"></div>
+    <div class="context-menu-item" data-action="discard-window">💤 Discard All Tabs</div>
+    <div class="context-menu-item" data-action="close-duplicates">🔗 Close Duplicate Tabs</div>
+    <div class="context-menu-separator"></div>
     <div class="context-menu-item danger" data-action="close-window">🗑️ Close Window</div>
   `;
   
@@ -1425,6 +1472,68 @@ function showWindowContextMenu(x, y, windowId) {
     switch (action) {
       case 'new-tab':
         await chrome.tabs.create({ windowId });
+        break;
+      case 'discard-window':
+        // Discard 窗口内所有标签（包括 active）
+        hideContextMenu();
+        
+        // 重新获取最新的标签列表
+        const freshWindowTabs = await chrome.tabs.query({ windowId });
+        const freshTabIds = freshWindowTabs.map(t => t.id);
+        
+        if (freshTabIds.length === 0) break;
+        
+        // 先切换到其他窗口
+        try {
+          const otherWindows = await chrome.windows.getAll({ populate: true });
+          const targetWindow = otherWindows.find(w => w.id !== windowId);
+          if (targetWindow && targetWindow.tabs.length > 0) {
+            await chrome.tabs.update(targetWindow.tabs[0].id, { active: true });
+            await chrome.windows.update(targetWindow.id, { focused: true });
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        } catch (err) {
+          console.error('Failed to switch window:', err);
+        }
+        
+        // Discard 每个标签，忽略错误
+        for (const tabId of freshTabIds) {
+          try {
+            const tab = await chrome.tabs.get(tabId);
+            if (!tab.discarded) {
+              await chrome.tabs.discard(tabId);
+            }
+          } catch (err) {
+            // 标签可能已经关闭，忽略错误
+            console.log(`Tab ${tabId} no longer exists, skipping`);
+          }
+        }
+        
+        // 刷新显示
+        setTimeout(() => loadTabs(), 200);
+        break;
+      case 'close-duplicates':
+        // 关闭重复的标签（保留每个 URL 的第一个）
+        hideContextMenu();
+        
+        const urlMap = new Map();
+        const duplicateIds = [];
+        
+        for (const tab of windowTabs) {
+          const url = tab.url;
+          if (urlMap.has(url)) {
+            // 这是重复的标签
+            duplicateIds.push(tab.id);
+          } else {
+            // 第一次出现，记录
+            urlMap.set(url, tab.id);
+          }
+        }
+        
+        if (duplicateIds.length > 0) {
+          await chrome.tabs.remove(duplicateIds);
+          console.log(`Closed ${duplicateIds.length} duplicate tabs`);
+        }
         break;
       case 'close-window':
         await chrome.windows.remove(windowId);
@@ -1467,6 +1576,7 @@ function showGroupContextMenu(x, y, groupId, windowId) {
     <div class="context-menu-separator"></div>
     <div class="context-menu-item" data-action="new-tab">➕ New Tab</div>
     <div class="context-menu-separator"></div>
+    <div class="context-menu-item" data-action="discard-group">💤 Discard All Tabs</div>
     <div class="context-menu-item" data-action="ungroup">📂 Ungroup</div>
     <div class="context-menu-item has-submenu" data-action="move-to">📦 Move to... ▶</div>
     <div class="context-menu-separator"></div>
@@ -1490,6 +1600,45 @@ function showGroupContextMenu(x, y, groupId, windowId) {
         const newTab = await chrome.tabs.create({ windowId });
         await chrome.tabs.group({ tabIds: [newTab.id], groupId });
         hideContextMenu();
+        break;
+      case 'discard-group':
+        // Discard 组内所有标签（包括 active）
+        hideContextMenu();
+        
+        // 重新获取最新的标签列表
+        const freshGroupTabs = await chrome.tabs.query({ groupId });
+        const freshTabIds = freshGroupTabs.map(t => t.id);
+        
+        if (freshTabIds.length === 0) break;
+        
+        // 找到组外的第一个标签作为切换目标
+        const allWindowTabs = await chrome.tabs.query({ windowId });
+        const otherTab = allWindowTabs.find(t => t.groupId !== groupId);
+        
+        if (otherTab) {
+          try {
+            await chrome.tabs.update(otherTab.id, { active: true });
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } catch (err) {
+            console.error('Failed to switch tab:', err);
+          }
+        }
+        
+        // Discard 每个标签，忽略错误
+        for (const tabId of freshTabIds) {
+          try {
+            const tab = await chrome.tabs.get(tabId);
+            if (!tab.discarded) {
+              await chrome.tabs.discard(tabId);
+            }
+          } catch (err) {
+            // 标签可能已经关闭，忽略错误
+            console.log(`Tab ${tabId} no longer exists, skipping`);
+          }
+        }
+        
+        // 刷新显示
+        setTimeout(() => loadTabs(), 200);
         break;
       case 'ungroup':
         await chrome.tabs.ungroup(tabIds);

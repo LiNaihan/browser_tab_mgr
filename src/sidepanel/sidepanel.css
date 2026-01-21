@@ -475,6 +475,28 @@ body {
   margin-right: -4px;
 }
 
+/* Discarded tabs - 灰度图标和半透明 */
+.tab-item.discarded {
+  opacity: 0.6;
+}
+
+.tab-item.discarded .tab-favicon {
+  filter: grayscale(100%);
+  opacity: 0.5;
+}
+
+.tab-item.discarded .tab-title {
+  color: var(--text-secondary);
+  font-style: italic;
+}
+
+.tab-item.discarded::after {
+  content: '💤';
+  font-size: 11px;
+  margin-left: auto;
+  opacity: 0.7;
+}
+
 /* Drop indicator */
 .drop-indicator {
   height: 2px;
