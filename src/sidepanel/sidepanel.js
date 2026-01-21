@@ -340,6 +340,19 @@ function connectToBackground() {
             }
           }
         }
+        
+        // 最大化所有窗口（跳过已全屏的窗口）
+        for (const win of windows) {
+          try {
+            // 跳过已经是 fullscreen 的窗口
+            if (win.state !== 'fullscreen') {
+              await chrome.windows.update(win.id, { state: 'maximized' });
+            }
+          } catch (err) {
+            console.log(`Could not maximize window ${win.id}:`, err.message);
+          }
+        }
+        
         // 打开后只更新图标（不执行操作）
         setTimeout(() => {
           if (sidebarPort) {
