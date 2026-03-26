@@ -2401,13 +2401,16 @@ async function restoreSession(replaceMode = false) {
       `Saved: ${new Date(session.savedAt).toLocaleString()}`
     );
     if (!confirmReplace) return;
-    
+
     // 获取当前所有窗口
     const currentWindows = await chrome.windows.getAll();
-    
+
     // 先创建恢复的窗口（至少要有一个窗口存在）
     await createSessionWindows(session);
-    
+
+    // 立即保存窗口名称（在关闭旧窗口之前）
+    await chrome.storage.local.set({ windowNames });
+
     // 关闭旧窗口
     for (const win of currentWindows) {
       try {
@@ -2425,12 +2428,12 @@ async function restoreSession(replaceMode = false) {
       `(Current windows will remain open)`
     );
     if (!confirmRestore) return;
-    
+
     await createSessionWindows(session);
+    
+    // 保存窗口名称
+    await chrome.storage.local.set({ windowNames });
   }
-  
-  // 保存窗口名称
-  await chrome.storage.local.set({ windowNames });
   
   hideSessionsPanel();
   showToast('Session restored!');
