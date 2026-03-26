@@ -110,9 +110,26 @@
       <div class="menu-preview">
         <div class="menu-item header">[Window (N tabs)]</div>
         <div class="menu-separator"></div>
+        <div class="menu-item">➕ New Tab</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item">📦 Archive Window</div>
+        <div class="menu-item">💤 Discard All Tabs</div>
+        <div class="menu-item">🔗 Close Duplicate Tabs</div>
+        <div class="menu-separator"></div>
         <div class="menu-item danger">🗑️ Close Window</div>
-        <div class="menu-item">Close Other Windows</div>
       </div>
+      
+      <h3>功能说明</h3>
+      <table>
+        <thead>
+          <tr><th>菜单项</th><th>功能</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Archive Window</td><td>保存窗口完整状态（tabs/groups/名称）并关闭，可从 Sessions 面板恢复</td></tr>
+          <tr><td>Discard All Tabs</td><td>卸载所有非活动标签释放内存，标签保留但变灰（点击自动恢复）</td></tr>
+          <tr><td>Close Duplicate Tabs</td><td>关闭相同 URL 的重复标签，保留每个 URL 的第一个</td></tr>
+        </tbody>
+      </table>
     </section>
 
     <!-- 分组右键菜单 -->
@@ -123,6 +140,9 @@
       <div class="menu-preview">
         <div class="menu-item header">[GroupName (N tabs)]</div>
         <div class="menu-separator"></div>
+        <div class="menu-item">➕ New Tab</div>
+        <div class="menu-separator"></div>
+        <div class="menu-item">💤 Discard All Tabs</div>
         <div class="menu-item">📂 Ungroup</div>
         <div class="menu-item">📦 Move to... <span class="menu-arrow">▶</span></div>
         <div class="menu-separator"></div>

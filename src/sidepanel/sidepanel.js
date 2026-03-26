@@ -18,6 +18,7 @@ let scrollPositionBeforeDrag = 0; // 拖拽窗口前的滚动位置
 let selectedTabIds = new Set(); // 多选的标签 ID
 let lastSelectedTabId = null;  // 上次选中的标签（用于 Shift 范围选择）
 let currentWindowId = null; // 当前 sidepanel 所在的窗口 ID
+let archivedWindows = []; // 归档的窗口列表
 
 // DOM Elements
 const elements = {
@@ -409,14 +410,17 @@ function setupSidebarSync() {
 async function loadWindowNames() {
   try {
     const result = await chrome.storage.local.get([
-      'windowNames', 
-      'windowOrder', 
-      'collapsedWindows', 
-      'collapsedGroups'
+      'windowNames',
+      'windowOrder',
+      'collapsedWindows',
+      'collapsedGroups',
+      'archivedWindows'
     ]);
     windowNames = result.windowNames || {};
     windowOrder = result.windowOrder || [];
     collapsedWindows = new Set(result.collapsedWindows || []);
+    collapsedGroups = new Set(result.collapsedGroups || []);
+    archivedWindows = result.archivedWindows || [];
     collapsedGroups = new Set(result.collapsedGroups || []);
   } catch (error) {
     console.error('Failed to load window names:', error);
@@ -1467,6 +1471,7 @@ function showWindowContextMenu(x, y, windowId) {
     <div class="context-menu-separator"></div>
     <div class="context-menu-item" data-action="new-tab">➕ New Tab</div>
     <div class="context-menu-separator"></div>
+    <div class="context-menu-item" data-action="archive-window">📦 Archive Window</div>
     <div class="context-menu-item" data-action="discard-window">💤 Discard All Tabs</div>
     <div class="context-menu-item" data-action="close-duplicates">🔗 Close Duplicate Tabs</div>
     <div class="context-menu-separator"></div>
@@ -1547,6 +1552,11 @@ function showWindowContextMenu(x, y, windowId) {
           await chrome.tabs.remove(duplicateIds);
           console.log(`Closed ${duplicateIds.length} duplicate tabs`);
         }
+        break;
+      case 'archive-window':
+        // 归档窗口
+        hideContextMenu();
+        await archiveWindow(windowId);
         break;
       case 'close-window':
         await chrome.windows.remove(windowId);
@@ -2373,6 +2383,148 @@ async function saveCurrentSession(showAlert = true) {
   console.log('[Session] Saved at', session.savedAt);
 }
 
+// ============ 归档窗口 ============
+
+async function archiveWindow(windowId) {
+  try {
+    // 检查是否是当前窗口
+    const isCurrentWindow = (windowId === currentWindowId);
+    
+    // 获取窗口数据
+    const win = await chrome.windows.get(windowId, { populate: true });
+    const groups = await chrome.tabGroups.query({});
+    
+    // 获取窗口名称
+    const windowName = windowNames[windowId] || `Window ${windowId}`;
+    
+    // 获取该窗口的所有分组
+    const windowGroups = groups.filter(g => 
+      win.tabs.some(t => t.groupId === g.id)
+    );
+    
+    // 整理分组数据
+    const groupsData = windowGroups.map(g => ({
+      title: g.title || '',
+      color: g.color,
+      tabs: win.tabs
+        .filter(t => t.groupId === g.id)
+        .map(t => ({ url: t.url, title: t.title, pinned: t.pinned }))
+    }));
+    
+    // 未分组的标签
+    const ungroupedTabs = win.tabs
+      .filter(t => t.groupId === -1 || !t.groupId)
+      .map(t => ({ url: t.url, title: t.title, pinned: t.pinned }));
+    
+    // 计算总 tab 数
+    const tabCount = ungroupedTabs.length + groupsData.reduce((sum, g) => sum + g.tabs.length, 0);
+    
+    // 创建归档对象
+    const archive = {
+      id: Date.now().toString(),
+      name: windowName,
+      archivedAt: new Date().toISOString(),
+      tabCount: tabCount,
+      groups: groupsData,
+      tabs: ungroupedTabs,
+    };
+    
+    // 先保存到 storage（确保在窗口关闭前完成）
+    const currentArchives = (await chrome.storage.local.get('archivedWindows')).archivedWindows || [];
+    currentArchives.push(archive);
+    await chrome.storage.local.set({ archivedWindows: currentArchives });
+    
+    // 更新内存数据
+    archivedWindows = currentArchives;
+    
+    console.log('[Archive] Saved to storage:', archive);
+    
+    // 如果不是当前窗口，显示提示
+    if (!isCurrentWindow) {
+      showToast(`Window "${windowName}" archived!`);
+    }
+    
+    // 关闭窗口（如果是当前窗口，这会关闭 sidepanel）
+    await chrome.windows.remove(windowId);
+  } catch (error) {
+    console.error('Failed to archive window:', error);
+    alert('Failed to archive window');
+  }
+}
+
+async function restoreArchivedWindow(archiveId) {
+  const archive = archivedWindows.find(a => a.id === archiveId);
+  if (!archive) {
+    alert('Archive not found');
+    return;
+  }
+  
+  // 创建新窗口
+  const newWindow = await chrome.windows.create({});
+  
+  // 保存窗口名称
+  windowNames[newWindow.id] = archive.name;
+  await chrome.storage.local.set({ windowNames });
+  
+  // 关闭默认创建的空白标签
+  const defaultTab = (await chrome.tabs.query({ windowId: newWindow.id }))[0];
+  
+  // 先创建未分组的标签
+  for (const tabData of archive.tabs) {
+    if (tabData.url && !tabData.url.startsWith('chrome://')) {
+      await chrome.tabs.create({
+        windowId: newWindow.id,
+        url: tabData.url,
+        pinned: tabData.pinned,
+      });
+    }
+  }
+  
+  // 创建分组和分组内的标签
+  for (const groupData of archive.groups) {
+    const tabIds = [];
+    
+    for (const tabData of groupData.tabs) {
+      if (tabData.url && !tabData.url.startsWith('chrome://')) {
+        const tab = await chrome.tabs.create({
+          windowId: newWindow.id,
+          url: tabData.url,
+          pinned: tabData.pinned,
+        });
+        tabIds.push(tab.id);
+      }
+    }
+    
+    if (tabIds.length > 0) {
+      const groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId: newWindow.id } });
+      await chrome.tabGroups.update(groupId, {
+        title: groupData.title,
+        color: groupData.color,
+      });
+    }
+  }
+  
+  // 关闭默认空白标签
+  if (defaultTab) {
+    try {
+      await chrome.tabs.remove(defaultTab.id);
+    } catch (e) {
+      // 可能已经被关闭
+    }
+  }
+  
+  // 还原后自动删除归档
+  await deleteArchivedWindow(archiveId);
+  
+  showToast(`Window "${archive.name}" restored!`);
+}
+
+async function deleteArchivedWindow(archiveId) {
+  archivedWindows = archivedWindows.filter(a => a.id !== archiveId);
+  await chrome.storage.local.set({ archivedWindows });
+  showToast('Archive deleted');
+}
+
 // 显示简单提示（不用 alert 阻塞）
 function showToast(message) {
   const toast = document.createElement('div');
@@ -2506,18 +2658,25 @@ async function exportSession() {
     alert('No saved session to export.');
     return;
   }
-  
-  const json = JSON.stringify(session, null, 2);
+
+  // 导出包含 session 和 archived windows
+  const exportData = {
+    session: session,
+    archivedWindows: archivedWindows,
+    exportedAt: new Date().toISOString()
+  };
+
+  const json = JSON.stringify(exportData, null, 2);
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
-  
+
   const a = document.createElement('a');
   a.href = url;
   a.download = `session_${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
-  
+
   URL.revokeObjectURL(url);
-  showToast('Session exported!');
+  showToast('Session & Archives exported!');
 }
 
 // 导入会话
@@ -2525,41 +2684,63 @@ async function importSession() {
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.json';
-  
+
   input.onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    
+
     try {
       const text = await file.text();
-      const session = JSON.parse(text);
+      const data = JSON.parse(text);
+
+      // 判断是新格式还是旧格式
+      let session;
+      let importedArchives = [];
       
+      if (data.session) {
+        // 新格式：包含 session 和 archivedWindows
+        session = data.session;
+        importedArchives = data.archivedWindows || [];
+      } else if (data.windows) {
+        // 旧格式：直接是 session
+        session = data;
+      } else {
+        throw new Error('Invalid session format');
+      }
+
       // 验证基本结构
       if (!session.windows || !Array.isArray(session.windows)) {
         throw new Error('Invalid session format');
       }
-      
-      session.savedAt = new Date().toISOString(); // 更新保存时间
+
+      session.savedAt = new Date().toISOString();
       await saveSession(session);
-      showToast('Session imported!');
+      
+      // 导入归档窗口（追加到现有归档）
+      if (importedArchives.length > 0) {
+        archivedWindows.push(...importedArchives);
+        await chrome.storage.local.set({ archivedWindows });
+      }
+      
+      showToast(`Imported: ${session.windows.length} windows + ${importedArchives.length} archives`);
       showSessionsPanel(); // 刷新
     } catch (err) {
       alert('Failed to import: ' + err.message);
     }
   };
-  
+
   input.click();
 }
 
 async function showSessionsPanel() {
   // 移除已有面板
   hideSessionsPanel();
-  
+
   const session = await loadSession();
-  
+
   let sessionInfo = '';
   if (session) {
-    const tabCount = session.windows.reduce((acc, w) => 
+    const tabCount = session.windows.reduce((acc, w) =>
       acc + w.tabs.length + w.groups.reduce((a, g) => a + g.tabs.length, 0), 0);
     sessionInfo = `
       <div class="session-item">
@@ -2579,12 +2760,33 @@ async function showSessionsPanel() {
   } else {
     sessionInfo = '<div class="sessions-empty">No saved session yet</div>';
   }
-  
+
+  // 归档窗口列表
+  let archivesHtml = '';
+  if (archivedWindows.length > 0) {
+    archivesHtml = archivedWindows.map(archive => `
+      <div class="archive-item" data-archive-id="${archive.id}">
+        <div class="archive-info">
+          <div class="archive-name">${escapeHtml(archive.name)}</div>
+          <div class="archive-meta">
+            ${archive.tabCount} tabs · ${new Date(archive.archivedAt).toLocaleString()}
+          </div>
+        </div>
+        <div class="archive-actions">
+          <button class="btn-restore-archive" data-archive-id="${archive.id}" title="Restore">↩️</button>
+          <button class="btn-delete-archive" data-archive-id="${archive.id}" title="Delete">🗑️</button>
+        </div>
+      </div>
+    `).join('');
+  } else {
+    archivesHtml = '<div class="sessions-empty">No archived windows</div>';
+  }
+
   const panel = document.createElement('div');
   panel.className = 'sessions-panel';
   panel.innerHTML = `
     <div class="sessions-header">
-      <h2>📚 Session</h2>
+      <h2>📚 Sessions & Archives</h2>
       <button class="sessions-close" title="Close">✕</button>
     </div>
     <div class="sessions-actions">
@@ -2592,6 +2794,10 @@ async function showSessionsPanel() {
     </div>
     <div class="sessions-list">
       ${sessionInfo}
+    </div>
+    <div class="sessions-section-title">📦 Archived Windows</div>
+    <div class="archives-list">
+      ${archivesHtml}
     </div>
     <div class="sessions-footer">
       <button class="btn-export">📤 Export JSON</button>
@@ -2623,6 +2829,26 @@ async function showSessionsPanel() {
   
   panel.querySelector('.btn-export').addEventListener('click', exportSession);
   panel.querySelector('.btn-import').addEventListener('click', importSession);
+  
+  // 归档窗口按钮事件
+  panel.querySelectorAll('.btn-restore-archive').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const archiveId = btn.dataset.archiveId;
+      await restoreArchivedWindow(archiveId);
+      hideSessionsPanel();
+    });
+  });
+  
+  panel.querySelectorAll('.btn-delete-archive').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const archiveId = btn.dataset.archiveId;
+      const archive = archivedWindows.find(a => a.id === archiveId);
+      if (archive && confirm(`Delete archived window "${archive.name}"?`)) {
+        await deleteArchivedWindow(archiveId);
+        showSessionsPanel(); // 刷新
+      }
+    });
+  });
   
   // 点击外部关闭
   const overlay = document.createElement('div');
