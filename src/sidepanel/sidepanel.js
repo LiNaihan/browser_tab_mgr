@@ -31,6 +31,7 @@ const elements = {
   settingsBtn: document.getElementById('settingsBtn'),
   syncSidebarBtn: document.getElementById('syncSidebarBtn'),
   locateCurrentBtn: document.getElementById('locateCurrentBtn'),
+  duplicatesBtn: document.getElementById('duplicatesBtn'),
 };
 
 // ============ 统一 Move 操作 ============
@@ -462,6 +463,17 @@ async function loadTabs() {
     // 获取所有标签组
     allGroups = await chrome.tabGroups.query({});
     
+    // 同步 Chrome 原生 tab groups 的折叠状态到侧边栏
+    for (const group of allGroups) {
+      if (group.collapsed) {
+        collapsedGroups.add(group.id);
+      } else {
+        // 如果 Chrome 中是展开的，但侧边栏记录的是折叠，移除折叠状态
+        // 这样能确保两边保持一致
+        collapsedGroups.delete(group.id);
+      }
+    }
+    
     renderTabList();
     updateStats();
   } catch (error) {
@@ -627,6 +639,55 @@ function updateStats() {
   const tabCount = allTabs.length;
   const windowCount = new Set(allTabs.map(t => t.windowId)).size;
   elements.tabStats.textContent = `${tabCount} tabs in ${windowCount} window${windowCount !== 1 ? 's' : ''}`;
+  updateDuplicatesButton();
+}
+
+function getWindowLabel(windowId) {
+  const isCurrentWindow = windowId === currentWindowId;
+  const hasActiveTab = allTabs.some(t => t.windowId === windowId && t.active);
+  const defaultLabel = (isCurrentWindow || hasActiveTab) ? 'Current Window' : `Window ${windowId}`;
+  return windowNames[windowId] || defaultLabel;
+}
+
+function findDuplicateTabGroups(tabs) {
+  const urlMap = new Map();
+  
+  for (const tab of tabs) {
+    const url = tab.url;
+    if (!url) continue;
+    
+    if (!urlMap.has(url)) {
+      urlMap.set(url, []);
+    }
+    urlMap.get(url).push(tab);
+  }
+  
+  const groups = [];
+  for (const [url, groupTabs] of urlMap) {
+    if (groupTabs.length > 1) {
+      groupTabs.sort((a, b) => {
+        if (a.windowId !== b.windowId) return a.windowId - b.windowId;
+        return a.index - b.index;
+      });
+      groups.push({ url, tabs: groupTabs });
+    }
+  }
+  
+  groups.sort((a, b) => b.tabs.length - a.tabs.length);
+  return groups;
+}
+
+function updateDuplicatesButton() {
+  const duplicateCount = findDuplicateTabGroups(allTabs)
+    .reduce((sum, g) => sum + g.tabs.length - 1, 0);
+  
+  if (duplicateCount > 0) {
+    elements.duplicatesBtn.classList.add('has-duplicates');
+    elements.duplicatesBtn.title = `Find duplicate tabs (${duplicateCount} duplicates)`;
+  } else {
+    elements.duplicatesBtn.classList.remove('has-duplicates');
+    elements.duplicatesBtn.title = 'Find duplicate tabs';
+  }
 }
 
 // ============ 数据处理 ============
@@ -739,6 +800,10 @@ function bindEvents() {
         if (tabGroup) {
           tabGroup.classList.remove('collapsed');
           collapsedGroups.delete(currentTab.groupId);
+          // 同步到 Chrome 原生 tab group
+          chrome.tabGroups.update(currentTab.groupId, { collapsed: false }).catch(err => {
+            console.error('Failed to expand group:', err);
+          });
         }
       }
       
@@ -762,7 +827,7 @@ function bindEvents() {
   });
   
   // 折叠所有组
-  elements.collapseAllBtn.addEventListener('click', () => {
+  elements.collapseAllBtn.addEventListener('click', async () => {
     const groups = document.querySelectorAll('.tab-group');
     // 检查是否有任何展开的组
     const anyExpanded = Array.from(groups).some(g => !g.classList.contains('collapsed'));
@@ -773,12 +838,20 @@ function bindEvents() {
       if (anyExpanded) {
         group.classList.add('collapsed');
         collapsedGroups.add(groupId);
+        // 同步到 Chrome 原生 tab group
+        chrome.tabGroups.update(groupId, { collapsed: true }).catch(err => {
+          console.error('Failed to collapse group:', err);
+        });
       } else {
         group.classList.remove('collapsed');
         collapsedGroups.delete(groupId);
+        // 同步到 Chrome 原生 tab group
+        chrome.tabGroups.update(groupId, { collapsed: false }).catch(err => {
+          console.error('Failed to expand group:', err);
+        });
       }
     });
-    saveCollapsedState();
+    await saveCollapsedState();
   });
   
   // 折叠/展开所有窗口
@@ -808,6 +881,9 @@ function bindEvents() {
   
   // 会话管理
   elements.sessionsBtn.addEventListener('click', showSessionsPanel);
+  
+  // 重复标签
+  elements.duplicatesBtn.addEventListener('click', showDuplicatesPanel);
   
   // 设置
   elements.settingsBtn.addEventListener('click', showSettingsPanel);
@@ -1041,9 +1117,17 @@ function handleTabListClick(e) {
     if (collapsedGroups.has(groupId)) {
       collapsedGroups.delete(groupId);
       group.classList.remove('collapsed');
+      // 同步到 Chrome 原生 tab group
+      chrome.tabGroups.update(groupId, { collapsed: false }).catch(err => {
+        console.error('Failed to expand group:', err);
+      });
     } else {
       collapsedGroups.add(groupId);
       group.classList.add('collapsed');
+      // 同步到 Chrome 原生 tab group
+      chrome.tabGroups.update(groupId, { collapsed: true }).catch(err => {
+        console.error('Failed to collapse group:', err);
+      });
     }
     saveCollapsedState();
     return;
@@ -1494,26 +1578,32 @@ function showWindowContextMenu(x, y, windowId) {
       case 'discard-window':
         // Discard 窗口内所有标签（包括 active）
         hideContextMenu();
-        
+
         // 重新获取最新的标签列表
         const freshWindowTabs = await chrome.tabs.query({ windowId });
         const freshTabIds = freshWindowTabs.map(t => t.id);
-        
+
         if (freshTabIds.length === 0) break;
-        
-        // 先切换到其他窗口
-        try {
-          const otherWindows = await chrome.windows.getAll({ populate: true });
-          const targetWindow = otherWindows.find(w => w.id !== windowId);
-          if (targetWindow && targetWindow.tabs.length > 0) {
-            await chrome.tabs.update(targetWindow.tabs[0].id, { active: true });
-            await chrome.windows.update(targetWindow.id, { focused: true });
-            await new Promise(resolve => setTimeout(resolve, 100));
+
+        // 检查这个窗口是否是当前聚焦的窗口
+        const currentWindow = await chrome.windows.get(windowId);
+        const isCurrentWindow = currentWindow.focused;
+
+        // 只有当这个窗口是当前聚焦窗口时，才需要切换到其他窗口
+        if (isCurrentWindow) {
+          try {
+            const otherWindows = await chrome.windows.getAll({ populate: true });
+            const targetWindow = otherWindows.find(w => w.id !== windowId);
+            if (targetWindow && targetWindow.tabs.length > 0) {
+              await chrome.tabs.update(targetWindow.tabs[0].id, { active: true });
+              await chrome.windows.update(targetWindow.id, { focused: true });
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
+          } catch (err) {
+            console.error('Failed to switch window:', err);
           }
-        } catch (err) {
-          console.error('Failed to switch window:', err);
         }
-        
+
         // Discard 每个标签，忽略错误
         for (const tabId of freshTabIds) {
           try {
@@ -1526,7 +1616,7 @@ function showWindowContextMenu(x, y, windowId) {
             console.log(`Tab ${tabId} no longer exists, skipping`);
           }
         }
-        
+
         // 刷新显示
         setTimeout(() => loadTabs(), 200);
         break;
@@ -1627,26 +1717,31 @@ function showGroupContextMenu(x, y, groupId, windowId) {
       case 'discard-group':
         // Discard 组内所有标签（包括 active）
         hideContextMenu();
-        
+
         // 重新获取最新的标签列表
         const freshGroupTabs = await chrome.tabs.query({ groupId });
         const freshTabIds = freshGroupTabs.map(t => t.id);
-        
+
         if (freshTabIds.length === 0) break;
-        
-        // 找到组外的第一个标签作为切换目标
-        const allWindowTabs = await chrome.tabs.query({ windowId });
-        const otherTab = allWindowTabs.find(t => t.groupId !== groupId);
-        
-        if (otherTab) {
-          try {
-            await chrome.tabs.update(otherTab.id, { active: true });
-            await new Promise(resolve => setTimeout(resolve, 100));
-          } catch (err) {
-            console.error('Failed to switch tab:', err);
+
+        // 检查组内是否有 active tab
+        const hasActiveTabInGroup = freshGroupTabs.some(t => t.active);
+
+        // 只有当组内有 active tab 时，才需要切换到组外的 tab
+        if (hasActiveTabInGroup) {
+          const allWindowTabs = await chrome.tabs.query({ windowId });
+          const otherTab = allWindowTabs.find(t => t.groupId !== groupId);
+
+          if (otherTab) {
+            try {
+              await chrome.tabs.update(otherTab.id, { active: true });
+              await new Promise(resolve => setTimeout(resolve, 100));
+            } catch (err) {
+              console.error('Failed to switch tab:', err);
+            }
           }
         }
-        
+
         // Discard 每个标签，忽略错误
         for (const tabId of freshTabIds) {
           try {
@@ -1659,7 +1754,7 @@ function showGroupContextMenu(x, y, groupId, windowId) {
             console.log(`Tab ${tabId} no longer exists, skipping`);
           }
         }
-        
+
         // 刷新显示
         setTimeout(() => loadTabs(), 200);
         break;
@@ -2292,7 +2387,25 @@ function listenToTabChanges() {
   // 标签组变化
   chrome.tabGroups.onCreated.addListener(() => loadTabs());
   chrome.tabGroups.onRemoved.addListener(() => loadTabs());
-  chrome.tabGroups.onUpdated.addListener(() => loadTabs());
+  chrome.tabGroups.onUpdated.addListener(async (groupId, changeInfo) => {
+    // 如果只是 collapsed 状态变化，同步到侧边栏
+    if (changeInfo.collapsed !== undefined) {
+      const groupElement = document.querySelector(`.tab-group[data-group-id="${groupId}"]`);
+      if (groupElement) {
+        if (changeInfo.collapsed) {
+          collapsedGroups.add(groupId);
+          groupElement.classList.add('collapsed');
+        } else {
+          collapsedGroups.delete(groupId);
+          groupElement.classList.remove('collapsed');
+        }
+        await saveCollapsedState();
+      }
+    } else {
+      // 其他变化（标题、颜色等），重新加载
+      loadTabs();
+    }
+  });
   
   // 窗口关闭时清理顺序
   chrome.windows.onRemoved.addListener(async (windowId) => {
@@ -2862,6 +2975,140 @@ async function showSessionsPanel() {
 function hideSessionsPanel() {
   const panel = document.querySelector('.sessions-panel');
   const overlay = document.querySelector('.sessions-overlay');
+  if (panel) panel.remove();
+  if (overlay) overlay.remove();
+}
+
+// ============ 重复标签去重 ============
+
+function showDuplicatesPanel() {
+  hideDuplicatesPanel();
+  
+  const groups = findDuplicateTabGroups(allTabs);
+  const duplicateTabCount = groups.reduce((sum, g) => sum + g.tabs.length - 1, 0);
+  
+  let listHtml = '';
+  if (groups.length === 0) {
+    listHtml = '<div class="duplicates-empty">No duplicate tabs found 🎉</div>';
+  } else {
+    listHtml = groups.map((group, groupIndex) => {
+      const tabsHtml = group.tabs.map((tab, tabIndex) => {
+        const favicon = tab.favIconUrl
+          ? `<img class="tab-favicon" src="${escapeHtml(tab.favIconUrl)}" alt="" style="width:14px;height:14px;flex-shrink:0">`
+          : `<span style="flex-shrink:0;font-size:12px">🌐</span>`;
+        const windowLabel = escapeHtml(getWindowLabel(tab.windowId));
+        const activeBadge = tab.active ? ' · <span class="active-badge">Active</span>' : '';
+        const pinnedBadge = tab.pinned ? ' · 📌 Pinned' : '';
+        const checked = tabIndex > 0 ? 'checked' : '';
+        
+        return `
+          <label class="duplicate-tab-item" data-tab-id="${tab.id}">
+            <input type="checkbox" class="duplicate-checkbox" data-tab-id="${tab.id}" ${checked}>
+            ${favicon}
+            <div class="duplicate-tab-info">
+              <div class="duplicate-tab-title" title="${escapeHtml(tab.title)}">${escapeHtml(tab.title || 'New Tab')}</div>
+              <div class="duplicate-tab-meta">${windowLabel}${activeBadge}${pinnedBadge}</div>
+            </div>
+          </label>
+        `;
+      }).join('');
+      
+      return `
+        <div class="duplicate-group" data-group-index="${groupIndex}">
+          <div class="duplicate-group-header">
+            <div class="duplicate-url" title="${escapeHtml(group.url)}">${escapeHtml(group.url)}</div>
+            <div class="duplicate-group-meta">${group.tabs.length} tabs · keep at least 1</div>
+          </div>
+          ${tabsHtml}
+        </div>
+      `;
+    }).join('');
+  }
+  
+  const panel = document.createElement('div');
+  panel.className = 'duplicates-panel';
+  panel.innerHTML = `
+    <div class="duplicates-header">
+      <h2>🔗 Duplicate Tabs</h2>
+      <button class="duplicates-close" title="Close">✕</button>
+    </div>
+    <div class="duplicates-summary">
+      ${groups.length === 0
+        ? 'All tabs have unique URLs'
+        : `${groups.length} duplicate group${groups.length !== 1 ? 's' : ''} · ${duplicateTabCount} tab${duplicateTabCount !== 1 ? 's' : ''} selected to close`}
+    </div>
+    <div class="duplicates-list">
+      ${listHtml}
+    </div>
+    <div class="duplicates-footer">
+      <button class="btn-cancel-duplicates">Cancel</button>
+      <button class="btn-close-duplicates" ${groups.length === 0 ? 'disabled' : ''}>
+        Close Selected
+      </button>
+    </div>
+  `;
+  
+  const updateCloseButton = () => {
+    const selectedCount = panel.querySelectorAll('.duplicate-checkbox:checked').length;
+    const closeBtn = panel.querySelector('.btn-close-duplicates');
+    closeBtn.textContent = selectedCount > 0 ? `Close Selected (${selectedCount})` : 'Close Selected';
+    closeBtn.disabled = selectedCount === 0;
+  };
+  
+  panel.querySelector('.duplicates-close').addEventListener('click', hideDuplicatesPanel);
+  panel.querySelector('.btn-cancel-duplicates').addEventListener('click', hideDuplicatesPanel);
+  
+  panel.querySelectorAll('.duplicate-checkbox').forEach(checkbox => {
+    checkbox.addEventListener('change', (e) => {
+      const group = e.target.closest('.duplicate-group');
+      const checkboxes = group.querySelectorAll('.duplicate-checkbox');
+      const checkedCount = group.querySelectorAll('.duplicate-checkbox:checked').length;
+      
+      // 同一组不能全部选中关闭，至少保留一个
+      if (checkedCount === checkboxes.length) {
+        e.target.checked = false;
+        showToast('Each URL group must keep at least one tab');
+      }
+      
+      updateCloseButton();
+    });
+  });
+  
+  panel.querySelector('.btn-close-duplicates').addEventListener('click', async () => {
+    const tabIds = Array.from(panel.querySelectorAll('.duplicate-checkbox:checked'))
+      .map(cb => parseInt(cb.dataset.tabId));
+    
+    if (tabIds.length === 0) return;
+    
+    const closeBtn = panel.querySelector('.btn-close-duplicates');
+    closeBtn.disabled = true;
+    closeBtn.textContent = 'Closing...';
+    
+    try {
+      await chrome.tabs.remove(tabIds);
+      hideDuplicatesPanel();
+      showToast(`Closed ${tabIds.length} duplicate tab${tabIds.length !== 1 ? 's' : ''}`);
+    } catch (err) {
+      console.error('Failed to close duplicate tabs:', err);
+      showToast('Failed to close some tabs');
+      closeBtn.disabled = false;
+      updateCloseButton();
+    }
+  });
+  
+  const overlay = document.createElement('div');
+  overlay.className = 'duplicates-overlay';
+  overlay.addEventListener('click', hideDuplicatesPanel);
+  
+  document.body.appendChild(overlay);
+  document.body.appendChild(panel);
+  
+  updateCloseButton();
+}
+
+function hideDuplicatesPanel() {
+  const panel = document.querySelector('.duplicates-panel');
+  const overlay = document.querySelector('.duplicates-overlay');
   if (panel) panel.remove();
   if (overlay) overlay.remove();
 }

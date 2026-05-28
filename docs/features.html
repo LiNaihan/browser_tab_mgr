@@ -77,6 +77,48 @@
         <p>滚动位置存储在 <code>chrome.storage.local.scrollPosition</code>，各窗口监听变化并同步。</p>
       </div>
     </section>
+
+    <section class="card">
+      <h2>5. 重复标签去重</h2>
+      <p>扫描<strong>所有窗口</strong>中的标签，按 URL 精确匹配找出重复项，并在面板中列出供用户选择关闭。</p>
+
+      <h3>入口</h3>
+      <table>
+        <thead>
+          <tr><th>入口</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>工具栏按钮</td><td>Header 中的「重复标签」按钮（两个重叠窗口图标）</td></tr>
+          <tr><td>状态提示</td><td>存在重复时按钮变为红色，tooltip 显示重复数量</td></tr>
+        </tbody>
+      </table>
+
+      <h3>面板交互</h3>
+      <table>
+        <thead>
+          <tr><th>元素</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>分组列表</td><td>按 URL 分组，显示完整 URL、每组标签数量</td></tr>
+          <tr><td>标签项</td><td>显示标题、所在窗口、Active / Pinned 状态</td></tr>
+          <tr><td>复选框</td><td>勾选表示关闭该标签；默认保留每组第一个，其余重复项已勾选</td></tr>
+          <tr><td>Close Selected</td><td>批量关闭已勾选的标签，按钮显示待关闭数量</td></tr>
+          <tr><td>Cancel / 遮罩 / ✕</td><td>关闭面板，不执行任何操作</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout info">
+        <div class="callout-title">💡 与窗口右键菜单的区别</div>
+        <p>窗口右键菜单中的「Close Duplicate Tabs」仅作用于<strong>当前窗口</strong>，且自动保留每个 URL 的第一个标签。全局去重面板支持<strong>跨窗口</strong>查看，并允许手动选择保留/关闭哪些标签。</p>
+      </div>
+
+      <h3>规则与限制</h3>
+      <ul>
+        <li>重复判定基于 URL 精确匹配（不做 trailing slash、hash 等规范化）</li>
+        <li>每个 URL 组至少保留 1 个标签，不能全部勾选关闭</li>
+        <li>无重复时显示「No duplicate tabs found」</li>
+      </ul>
+    </section>
   </main>
 </body>
 </html>
