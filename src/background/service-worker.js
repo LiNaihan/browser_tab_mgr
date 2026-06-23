@@ -3,6 +3,14 @@
  * 处理插件的后台逻辑
  */
 
+import {
+  captureSession,
+  isDegraded,
+  preserveCheckpoint,
+  resolveWindowNames,
+  updateRegistry,
+} from '../lib/session-utils.js';
+
 const AUTO_SAVE_ALARM = 'auto-save-session';
 const AUTO_SAVE_INTERVAL_MINUTES = 10;
 
@@ -121,50 +129,52 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 });
 
 // 自动保存会话
+//
+// 关键改动（防止外力关闭浏览器后覆盖好数据）：
+// - 先按指纹恢复窗口名（重启后 windowId 变了也能认领回名字）。
+// - 若当前状态相对上次明显退化（窗口/标签骤减），不直接覆盖，而是把上次的好
+//   checkpoint 冻结成一份独立可恢复的 ckpt，再把基线推进到当前状态。
 async function autoSaveSession() {
   try {
     const windows = await chrome.windows.getAll({ populate: true });
     const groups = await chrome.tabGroups.query({});
-    
-    // 加载自定义窗口名称
-    const result = await chrome.storage.local.get('windowNames');
-    const windowNames = result.windowNames || {};
-    
-    const sessionWindows = [];
-    
-    for (const win of windows) {
-      const windowName = windowNames[win.id] || null;
-      
-      const windowGroups = groups.filter(g => 
-        win.tabs.some(t => t.groupId === g.id)
+
+    const store = await chrome.storage.local.get([
+      'windowNames',
+      'currentSession',
+      'sessionCheckpoints',
+      'windowNameRegistry',
+    ]);
+
+    const registry = store.windowNameRegistry || {};
+
+    // 按指纹恢复缺失的窗口名（即便侧边栏从未打开过也能恢复）
+    const { names, changed } = resolveWindowNames(windows, store.windowNames || {}, registry);
+
+    const newSession = captureSession(windows, groups, names);
+    const prev = store.currentSession || null;
+    let checkpoints = store.sessionCheckpoints || [];
+
+    // 退化检测：把上次的好状态冻结为 ckpt，避免被本次覆盖
+    if (prev && isDegraded(prev, newSession)) {
+      checkpoints = preserveCheckpoint(checkpoints, prev, 'auto');
+      console.warn(
+        '[Session] Degradation detected, preserved previous checkpoint before overwrite'
       );
-      
-      const groupsData = windowGroups.map(g => ({
-        title: g.title || '',
-        color: g.color,
-        tabs: win.tabs
-          .filter(t => t.groupId === g.id)
-          .map(t => ({ url: t.url, title: t.title, pinned: t.pinned }))
-      }));
-      
-      const ungroupedTabs = win.tabs
-        .filter(t => t.groupId === -1 || !t.groupId)
-        .map(t => ({ url: t.url, title: t.title, pinned: t.pinned }));
-      
-      sessionWindows.push({
-        name: windowName,
-        groups: groupsData,
-        tabs: ungroupedTabs,
-      });
     }
-    
-    const session = {
-      savedAt: new Date().toISOString(),
-      windows: sessionWindows,
+
+    const newRegistry = updateRegistry(windows, names, registry);
+
+    const toSet = {
+      currentSession: newSession,
+      sessionCheckpoints: checkpoints,
+      windowNameRegistry: newRegistry,
     };
-    
-    await chrome.storage.local.set({ currentSession: session });
-    console.log('[Session] Auto-saved at', session.savedAt);
+    // 仅在恢复出新名字时回写 windowNames（只新增、不删除）
+    if (changed) toSet.windowNames = names;
+
+    await chrome.storage.local.set(toSet);
+    console.log('[Session] Auto-saved at', newSession.savedAt);
   } catch (err) {
     console.error('[Session] Auto-save failed:', err);
   }

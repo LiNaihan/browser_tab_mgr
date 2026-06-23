@@ -2,6 +2,12 @@
  * Side Panel - 标签管理器主界面
  */
 
+import {
+  captureSession,
+  resolveWindowNames,
+  updateRegistry,
+} from '../lib/session-utils.js';
+
 // State
 let allTabs = [];
 let allGroups = [];
@@ -267,6 +273,7 @@ async function init() {
   currentWindowId = win.id;
   
   await loadWindowNames();
+  await restoreNamesFromRegistry();
   await loadTabs();
   bindEvents();
   listenToTabChanges();
@@ -452,6 +459,35 @@ async function saveWindowOrder(order) {
 async function saveWindowName(windowId, name) {
   windowNames[windowId] = name;
   await chrome.storage.local.set({ windowNames });
+  await persistWindowNameRegistry();
+}
+
+// 用当前已命名窗口刷新「窗口名注册表」（指纹 -> 名字），供重启后按指纹认领
+async function persistWindowNameRegistry() {
+  try {
+    const windows = await chrome.windows.getAll({ populate: true });
+    const store = await chrome.storage.local.get('windowNameRegistry');
+    const registry = updateRegistry(windows, windowNames, store.windowNameRegistry || {});
+    await chrome.storage.local.set({ windowNameRegistry: registry });
+  } catch (error) {
+    console.error('Failed to persist window name registry:', error);
+  }
+}
+
+// 启动时按指纹恢复缺失的窗口名（重启后 windowId 变化也能认领回名字）
+async function restoreNamesFromRegistry() {
+  try {
+    const windows = await chrome.windows.getAll({ populate: true });
+    const store = await chrome.storage.local.get('windowNameRegistry');
+    const registry = store.windowNameRegistry || {};
+    const { names, changed } = resolveWindowNames(windows, windowNames, registry);
+    if (changed) {
+      windowNames = names;
+      await chrome.storage.local.set({ windowNames });
+    }
+  } catch (error) {
+    console.error('Failed to restore window names from registry:', error);
+  }
 }
 
 // ============ 数据加载 ============
@@ -2447,49 +2483,15 @@ async function saveSession(session) {
 async function captureCurrentSession() {
   const windows = await chrome.windows.getAll({ populate: true });
   const groups = await chrome.tabGroups.query({});
-  
-  const sessionWindows = [];
-  
-  for (const win of windows) {
-    // 获取该窗口的自定义名称
-    const windowName = windowNames[win.id] || null;
-    
-    // 获取该窗口的所有分组
-    const windowGroups = groups.filter(g => 
-      win.tabs.some(t => t.groupId === g.id)
-    );
-    
-    // 整理分组数据
-    const groupsData = windowGroups.map(g => ({
-      title: g.title || '',
-      color: g.color,
-      tabs: win.tabs
-        .filter(t => t.groupId === g.id)
-        .map(t => ({ url: t.url, title: t.title, pinned: t.pinned }))
-    }));
-    
-    // 未分组的标签
-    const ungroupedTabs = win.tabs
-      .filter(t => t.groupId === -1 || !t.groupId)
-      .map(t => ({ url: t.url, title: t.title, pinned: t.pinned }));
-    
-    sessionWindows.push({
-      name: windowName,
-      groups: groupsData,
-      tabs: ungroupedTabs,
-    });
-  }
-  
-  return {
-    savedAt: new Date().toISOString(),
-    windows: sessionWindows,
-  };
+  return captureSession(windows, groups, windowNames);
 }
 
 // 手动保存
 async function saveCurrentSession(showAlert = true) {
   const session = await captureCurrentSession();
   await saveSession(session);
+  // 同步刷新窗口名注册表，确保重启后可按指纹认领
+  await persistWindowNameRegistry();
   if (showAlert) {
     showToast('Session saved!');
   }
@@ -2638,6 +2640,30 @@ async function deleteArchivedWindow(archiveId) {
   showToast('Archive deleted');
 }
 
+// ============ Checkpoints（自动保留的历史会话）============
+
+async function loadCheckpoints() {
+  const result = await chrome.storage.local.get('sessionCheckpoints');
+  return result.sessionCheckpoints || [];
+}
+
+async function restoreCheckpoint(checkpointId, replaceMode = false) {
+  const checkpoints = await loadCheckpoints();
+  const cp = checkpoints.find(c => c.id === checkpointId);
+  if (!cp) {
+    alert('Checkpoint not found');
+    return;
+  }
+  await applySessionRestore({ savedAt: cp.savedAt, windows: cp.windows }, replaceMode);
+}
+
+async function deleteCheckpoint(checkpointId) {
+  const checkpoints = await loadCheckpoints();
+  const next = checkpoints.filter(c => c.id !== checkpointId);
+  await chrome.storage.local.set({ sessionCheckpoints: next });
+  showToast('Checkpoint deleted');
+}
+
 // 显示简单提示（不用 alert 阻塞）
 function showToast(message) {
   const toast = document.createElement('div');
@@ -2653,9 +2679,18 @@ async function restoreSession(replaceMode = false) {
     alert('No saved session found.');
     return;
   }
-  
-  const tabCount = session.windows.reduce((acc, w) => 
-    acc + w.tabs.length + w.groups.reduce((a, g) => a + g.tabs.length, 0), 0);
+  await applySessionRestore(session, replaceMode);
+}
+
+// 把任意会话对象恢复出来（被 currentSession 与 checkpoint 共用）
+async function applySessionRestore(session, replaceMode = false) {
+  if (!session || !Array.isArray(session.windows) || session.windows.length === 0) {
+    alert('This checkpoint is empty.');
+    return;
+  }
+
+  const tabCount = session.windows.reduce((acc, w) =>
+    acc + (w.tabs?.length || 0) + (w.groups?.reduce((a, g) => a + (g.tabs?.length || 0), 0) || 0), 0);
   
   if (replaceMode) {
     // 替换模式：关闭所有现有窗口，恢复保存的会话
@@ -2699,7 +2734,10 @@ async function restoreSession(replaceMode = false) {
     // 保存窗口名称
     await chrome.storage.local.set({ windowNames });
   }
-  
+
+  // 恢复后刷新注册表，使新窗口的名字也能在后续重启时按指纹认领
+  await persistWindowNameRegistry();
+
   hideSessionsPanel();
   showToast('Session restored!');
 }
@@ -2772,10 +2810,12 @@ async function exportSession() {
     return;
   }
 
-  // 导出包含 session 和 archived windows
+  // 导出包含 session、archived windows 和保留的 checkpoints
+  const checkpoints = await loadCheckpoints();
   const exportData = {
     session: session,
     archivedWindows: archivedWindows,
+    sessionCheckpoints: checkpoints,
     exportedAt: new Date().toISOString()
   };
 
@@ -2809,11 +2849,13 @@ async function importSession() {
       // 判断是新格式还是旧格式
       let session;
       let importedArchives = [];
+      let importedCheckpoints = [];
       
       if (data.session) {
         // 新格式：包含 session 和 archivedWindows
         session = data.session;
         importedArchives = data.archivedWindows || [];
+        importedCheckpoints = data.sessionCheckpoints || [];
       } else if (data.windows) {
         // 旧格式：直接是 session
         session = data;
@@ -2834,6 +2876,13 @@ async function importSession() {
         archivedWindows.push(...importedArchives);
         await chrome.storage.local.set({ archivedWindows });
       }
+
+      // 导入保留的 checkpoints（追加）
+      if (importedCheckpoints.length > 0) {
+        const existing = await loadCheckpoints();
+        const merged = [...importedCheckpoints, ...existing].slice(0, 12);
+        await chrome.storage.local.set({ sessionCheckpoints: merged });
+      }
       
       showToast(`Imported: ${session.windows.length} windows + ${importedArchives.length} archives`);
       showSessionsPanel(); // 刷新
@@ -2850,6 +2899,7 @@ async function showSessionsPanel() {
   hideSessionsPanel();
 
   const session = await loadSession();
+  const checkpoints = await loadCheckpoints();
 
   let sessionInfo = '';
   if (session) {
@@ -2895,6 +2945,32 @@ async function showSessionsPanel() {
     archivesHtml = '<div class="sessions-empty">No archived windows</div>';
   }
 
+  // Checkpoints（自动保留的历史会话，多在「疑似数据丢失」时产生）
+  let checkpointsHtml = '';
+  if (checkpoints.length > 0) {
+    checkpointsHtml = checkpoints.map(cp => {
+      const reasonBadge = cp.reason === 'auto'
+        ? '<span class="checkpoint-badge">⚠️ auto-preserved</span>'
+        : '';
+      const when = new Date(cp.preservedAt || cp.savedAt).toLocaleString();
+      return `
+        <div class="checkpoint-item" data-checkpoint-id="${cp.id}">
+          <div class="checkpoint-info">
+            <div class="checkpoint-name">${cp.windowCount} window(s) · ${cp.tabCount} tabs ${reasonBadge}</div>
+            <div class="checkpoint-meta">Preserved: ${when}</div>
+          </div>
+          <div class="checkpoint-actions">
+            <button class="btn-restore-ckpt-add" data-checkpoint-id="${cp.id}" title="Open in new windows">➕</button>
+            <button class="btn-restore-ckpt-replace" data-checkpoint-id="${cp.id}" title="Replace current windows">🔄</button>
+            <button class="btn-delete-ckpt" data-checkpoint-id="${cp.id}" title="Delete">🗑️</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  } else {
+    checkpointsHtml = '<div class="sessions-empty">No preserved checkpoints</div>';
+  }
+
   const panel = document.createElement('div');
   panel.className = 'sessions-panel';
   panel.innerHTML = `
@@ -2908,6 +2984,10 @@ async function showSessionsPanel() {
     <div class="sessions-list">
       ${sessionInfo}
     </div>
+    <div class="sessions-section-title">🛟 Preserved Checkpoints</div>
+    <div class="checkpoints-list">
+      ${checkpointsHtml}
+    </div>
     <div class="sessions-section-title">📦 Archived Windows</div>
     <div class="archives-list">
       ${archivesHtml}
@@ -2917,7 +2997,7 @@ async function showSessionsPanel() {
       <button class="btn-import">📥 Import JSON</button>
     </div>
     <div class="sessions-note">
-      Auto-saves every 10 minutes
+      Auto-saves every 10 minutes · 退化时自动保留旧快照
     </div>
   `;
   
@@ -2958,6 +3038,30 @@ async function showSessionsPanel() {
       const archive = archivedWindows.find(a => a.id === archiveId);
       if (archive && confirm(`Delete archived window "${archive.name}"?`)) {
         await deleteArchivedWindow(archiveId);
+        showSessionsPanel(); // 刷新
+      }
+    });
+  });
+
+  // Checkpoint 按钮事件
+  panel.querySelectorAll('.btn-restore-ckpt-add').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await restoreCheckpoint(btn.dataset.checkpointId, false);
+      hideSessionsPanel();
+    });
+  });
+
+  panel.querySelectorAll('.btn-restore-ckpt-replace').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      await restoreCheckpoint(btn.dataset.checkpointId, true);
+      hideSessionsPanel();
+    });
+  });
+
+  panel.querySelectorAll('.btn-delete-ckpt').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (confirm('Delete this preserved checkpoint?')) {
+        await deleteCheckpoint(btn.dataset.checkpointId);
         showSessionsPanel(); // 刷新
       }
     });

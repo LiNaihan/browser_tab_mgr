@@ -942,6 +942,81 @@ body {
   background: var(--danger);
 }
 
+/* Preserved Checkpoints */
+.checkpoints-list {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 0 8px;
+}
+
+.checkpoint-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px;
+  background: var(--bg-secondary);
+  border-radius: 6px;
+  margin-bottom: 6px;
+  transition: all 0.15s;
+}
+
+.checkpoint-item:hover {
+  background: var(--bg-hover);
+}
+
+.checkpoint-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.checkpoint-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checkpoint-badge {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--danger);
+  margin-left: 4px;
+}
+
+.checkpoint-meta {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.checkpoint-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: 8px;
+}
+
+.checkpoint-actions button {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-restore-ckpt-add:hover,
+.btn-restore-ckpt-replace:hover {
+  background: var(--accent);
+}
+
+.btn-delete-ckpt:hover {
+  background: var(--danger);
+}
+
 /* Sessions Footer */
 .sessions-footer {
   display: flex;
