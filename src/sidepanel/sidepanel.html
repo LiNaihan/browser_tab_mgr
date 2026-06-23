@@ -14,41 +14,70 @@
         <span class="search-icon">🔍</span>
         <input type="text" id="searchInput" placeholder="Search tabs..." autocomplete="off">
       </div>
-      <div class="header-actions">
-        <button id="locateCurrentBtn" class="icon-btn" title="Locate current tab">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/>
-            <circle cx="8" cy="8" r="2" fill="currentColor"/>
-          </svg>
-        </button>
-        <button id="syncSidebarBtn" class="icon-btn" title="Toggle sidebar in all windows">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <rect x="1" y="2" width="6" height="5" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
-            <rect x="9" y="2" width="6" height="5" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
-            <rect x="1" y="9" width="6" height="5" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
-            <rect x="9" y="9" width="6" height="5" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
-          </svg>
-        </button>
-        <button id="duplicatesBtn" class="icon-btn" title="Find duplicate tabs">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <rect x="1" y="2" width="6" height="8" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
-            <rect x="9" y="2" width="6" height="8" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
-            <path d="M4 14h8" stroke="currentColor" stroke-width="1.5"/>
-          </svg>
-        </button>
-        <button id="sessionsBtn" class="icon-btn" title="Sessions">💾</button>
-        <button id="collapseWindowsBtn" class="icon-btn" title="Collapse/Expand all windows">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <rect x="2" y="2" width="12" height="3" rx="1"/>
-            <rect x="2" y="7" width="12" height="3" rx="1"/>
-            <rect x="2" y="12" width="12" height="2" rx="1"/>
-          </svg>
-        </button>
-        <button id="collapseAllBtn" class="icon-btn" title="Collapse all groups">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M4 6l4 4 4-4H4z"/>
-          </svg>
-        </button>
+      <div class="toolbar">
+        <!-- AI 整理 -->
+        <div class="toolbar-group">
+          <button id="organizeBtn" class="icon-btn" title="AI 整理未分组的标签">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M8 1l1.6 3.6L13.5 5l-2.8 2.6.7 3.9L8 9.7 4.6 11.5l.7-3.9L2.5 5l3.9-.4z"/>
+            </svg>
+          </button>
+          <button id="organizeAllBtn" class="icon-btn" title="AI 全部重新分组（含已分组）">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M13.6 5.5A5 5 0 1 0 14 8h-1.5a3.5 3.5 0 1 1-.5-1.8L10 8h4V4z"/>
+            </svg>
+          </button>
+          <button id="duplicatesBtn" class="icon-btn" title="Find duplicate tabs">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <rect x="1" y="2" width="6" height="8" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
+              <rect x="9" y="2" width="6" height="8" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
+              <path d="M4 14h8" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </button>
+        </div>
+
+        <span class="toolbar-divider"></span>
+
+        <!-- 视图 -->
+        <div class="toolbar-group">
+          <button id="locateCurrentBtn" class="icon-btn" title="Locate current tab">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="1.5" fill="none"/>
+              <circle cx="8" cy="8" r="2" fill="currentColor"/>
+            </svg>
+          </button>
+          <button id="collapseWindowsBtn" class="icon-btn" title="Collapse/Expand all windows">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <rect x="2" y="2" width="12" height="3" rx="1"/>
+              <rect x="2" y="7" width="12" height="3" rx="1"/>
+              <rect x="2" y="12" width="12" height="2" rx="1"/>
+            </svg>
+          </button>
+          <button id="collapseAllBtn" class="icon-btn" title="Collapse all groups">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M4 6l4 4 4-4H4z"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- 系统：会话 / 侧栏（靠右） -->
+        <div class="toolbar-group toolbar-group-end">
+          <button id="sessionsBtn" class="icon-btn" title="Sessions">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2">
+              <path d="M2.6 2h7.6L14 5.8V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 .6-1z"/>
+              <path d="M5 2v3.2h4.5V2"/>
+              <rect x="4.3" y="8.6" width="7.4" height="3.8" rx="0.5"/>
+            </svg>
+          </button>
+          <button id="syncSidebarBtn" class="icon-btn" title="Toggle sidebar in all windows">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <rect x="1" y="2" width="6" height="5" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
+              <rect x="9" y="2" width="6" height="5" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
+              <rect x="1" y="9" width="6" height="5" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
+              <rect x="9" y="9" width="6" height="5" rx="1" stroke="currentColor" stroke-width="1" fill="none"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </header>
 

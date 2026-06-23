@@ -7,6 +7,12 @@ import {
   resolveWindowNames,
   updateRegistry,
 } from '../lib/session-utils.js';
+import {
+  analyzeTabs,
+  DEFAULT_LLM_CONFIG,
+  DEFAULT_ORGANIZE_PROMPT,
+  VALID_GROUP_COLORS,
+} from '../lib/llm.js';
 
 // State
 let allTabs = [];
@@ -38,6 +44,8 @@ const elements = {
   syncSidebarBtn: document.getElementById('syncSidebarBtn'),
   locateCurrentBtn: document.getElementById('locateCurrentBtn'),
   duplicatesBtn: document.getElementById('duplicatesBtn'),
+  organizeBtn: document.getElementById('organizeBtn'),
+  organizeAllBtn: document.getElementById('organizeAllBtn'),
 };
 
 // ============ 统一 Move 操作 ============
@@ -920,6 +928,11 @@ function bindEvents() {
   
   // 重复标签
   elements.duplicatesBtn.addEventListener('click', showDuplicatesPanel);
+  
+  // AI 整理：仅未分组的标签
+  elements.organizeBtn.addEventListener('click', () => startOrganize('ungrouped'));
+  // AI 整理：全部重新分组（含已分组）
+  elements.organizeAllBtn.addEventListener('click', () => startOrganize('all'));
   
   // 设置
   elements.settingsBtn.addEventListener('click', showSettingsPanel);
@@ -3217,7 +3230,492 @@ function hideDuplicatesPanel() {
   if (overlay) overlay.remove();
 }
 
+// ============ AI 整理（LLM 分组）============
+//
+// 范围：所有窗口的未固定标签（Tab Group 不能跨窗口，应用时按各自窗口分别建组）。
+// 流程：收集标签 → 调用 LLM → 预览方案 → 用户确认后才创建分组。
+
+// scope: 'ungrouped' 只整理未分组标签 | 'all' 全部重新分组（含已分组）
+async function startOrganize(scope = 'ungrouped') {
+  const config = await loadLlmConfig();
+  if (!config.apiKey) {
+    showToast('请先在设置里配置 AI（API Key）');
+    showSettingsPanel();
+    return;
+  }
+
+  // 固定标签无法成组，始终跳过；ungrouped 模式下再排除已在分组里的标签
+  const nonPinned = allTabs.filter(t => !t.pinned);
+  const isUngrouped = t => t.groupId === undefined || t.groupId === -1;
+  const candidates = scope === 'all' ? nonPinned : nonPinned.filter(isUngrouped);
+
+  const pinnedSkipped = allTabs.length - nonPinned.length;
+  const groupedSkipped = scope === 'all' ? 0 : nonPinned.length - candidates.length;
+
+  if (candidates.length < 2) {
+    showToast(scope === 'all' ? '可整理的标签太少' : '没有足够的未分组标签');
+    return;
+  }
+
+  const meta = { count: candidates.length, pinnedSkipped, groupedSkipped, scope };
+  showOrganizePanel({ loading: true, ...meta });
+
+  try {
+    // 仅未分组模式：把已有分组喂给模型，让它判断哪些标签应并入现有分组（复用同名）
+    const existingGroups = scope === 'all' ? [] : await getExistingGroupsInfo();
+    const existingNames = existingGroups.map(g => (g.name || '').trim().toLowerCase());
+    // 用 0 开始的小序号喂给模型，避免大整数 tab id 被抄错/误当示例
+    const tabsForLlm = candidates.map((t, i) => ({ id: i, title: t.title, url: t.url }));
+    const plan = await analyzeTabs(tabsForLlm, config, existingGroups);
+
+    const mapIdx = i => candidates[i]?.id;
+    let usable = false;
+
+    if (plan.mode === 'windows') {
+      for (const w of plan.windows) {
+        for (const g of w.groups) {
+          g.tabIds = g.tabIds.map(mapIdx).filter(id => id !== undefined);
+        }
+        // 保留单标签项以便移动到目标窗口，但后续不会为其建组
+        w.groups = w.groups.filter(g => g.tabIds.length >= 1);
+      }
+      plan.windows = plan.windows.filter(w =>
+        w.groups.reduce((acc, g) => acc + g.tabIds.length, 0) >= 2
+      );
+      usable = plan.windows.length > 0;
+    } else {
+      for (const g of plan.groups) {
+        g.tabIds = g.tabIds.map(mapIdx).filter(id => id !== undefined);
+      }
+      // 单 tab 不成组
+      plan.groups = plan.groups.filter(g => g.tabIds.length >= 2);
+      usable = plan.groups.length > 0;
+    }
+
+    if (!usable) {
+      showOrganizePanel({ empty: true, raw: plan.raw, ...meta });
+      return;
+    }
+    showOrganizePanel({ plan, existingNames, ...meta });
+  } catch (err) {
+    console.error('AI organize failed:', err);
+    showOrganizePanel({ error: err.message || String(err) });
+  }
+}
+
+// 渲染一个分组里的标签清单
+function renderOrganizeGroupTabs(tabIds) {
+  return tabIds.map(id => {
+    const tab = allTabs.find(t => t.id === id);
+    if (!tab) return '';
+    const favicon = tab.favIconUrl
+      ? `<img class="tab-favicon" src="${escapeHtml(tab.favIconUrl)}" alt="" style="width:14px;height:14px;flex-shrink:0">`
+      : `<span style="flex-shrink:0;font-size:12px">🌐</span>`;
+    return `
+      <div class="organize-tab">
+        ${favicon}
+        <span class="organize-tab-title" title="${escapeHtml(tab.title)}">${escapeHtml(tab.title || 'New Tab')}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+function colorDot(color) {
+  const safe = VALID_GROUP_COLORS.includes(color) ? color : 'grey';
+  return `<span class="organize-color-dot" style="background: var(--group-${safe})"></span>`;
+}
+
+function showOrganizePanel(state) {
+  hideOrganizePanel();
+
+  let bodyHtml = '';
+  let footerHtml = '';
+
+  const skipParts = [];
+  if (state.pinnedSkipped) skipParts.push(`${state.pinnedSkipped} 个固定`);
+  if (state.groupedSkipped) skipParts.push(`${state.groupedSkipped} 个已分组`);
+  const scopeNote = state.count !== undefined
+    ? `${state.scope === 'all' ? '全部重排' : '仅未分组'} · 分析 ${state.count} 个标签${skipParts.length ? `（跳过 ${skipParts.join('、')}）` : ''}`
+    : '';
+
+  if (state.loading) {
+    bodyHtml = `<div class="organize-status">🤖 正在分析标签…<br><span class="organize-subtle">${scopeNote}</span></div>`;
+    footerHtml = `<button class="btn-cancel-organize">取消</button>`;
+  } else if (state.error) {
+    bodyHtml = `<div class="organize-status error">❌ ${escapeHtml(state.error)}</div>`;
+    footerHtml = `<button class="btn-cancel-organize">关闭</button>
+                  <button class="btn-retry-organize">重试</button>`;
+  } else if (state.empty) {
+    const rawHint = state.raw
+      ? `<div class="organize-raw"><div class="organize-raw-label">模型原始返回：</div><pre>${escapeHtml(state.raw)}</pre></div>`
+      : '';
+    bodyHtml = `<div class="organize-status">模型没有给出可用的分组。<br><span class="organize-subtle">${scopeNote}</span>${rawHint}</div>`;
+    footerHtml = `<button class="btn-cancel-organize">关闭</button>
+                  <button class="btn-retry-organize">重试</button>`;
+  } else if (state.plan && state.plan.mode === 'windows') {
+    const existingNames = state.existingNames || [];
+    const willMerge = g => existingNames.includes((g.name || '').trim().toLowerCase());
+    const windowsHtml = state.plan.windows.map((w, widx) => {
+      const total = w.groups.reduce((acc, g) => acc + g.tabIds.length, 0);
+      // 命中已有分组 → 并入；其余里 >=2 才建组，单 tab 作为散标签随窗口移入
+      const mergeGroups = w.groups.filter(willMerge);
+      const rest = w.groups.filter(g => !willMerge(g));
+      const realGroups = rest.filter(g => g.tabIds.length >= 2);
+      const looseIds = rest.filter(g => g.tabIds.length < 2).flatMap(g => g.tabIds);
+      const mergeHtml = mergeGroups.map(g => `
+        <div class="organize-group">
+          <div class="organize-group-header static">
+            ${colorDot(g.color)}
+            <span class="organize-group-name">${escapeHtml(g.name)}</span>
+            <span class="organize-merge-badge">并入已有</span>
+            <span class="organize-group-count">${g.tabIds.length}</span>
+          </div>
+          <div class="organize-group-tabs">${renderOrganizeGroupTabs(g.tabIds)}</div>
+        </div>
+      `).join('');
+      const groupsHtml = mergeHtml + realGroups.map(g => `
+        <div class="organize-group">
+          <div class="organize-group-header static">
+            ${colorDot(g.color)}
+            <span class="organize-group-name">${escapeHtml(g.name)}</span>
+            <span class="organize-group-count">${g.tabIds.length}</span>
+          </div>
+          <div class="organize-group-tabs">${renderOrganizeGroupTabs(g.tabIds)}</div>
+        </div>
+      `).join('');
+
+      const looseHtml = looseIds.length ? `
+        <div class="organize-group">
+          <div class="organize-group-header static">
+            <span class="organize-group-name organize-subtle">未分组（单独移入）</span>
+            <span class="organize-group-count">${looseIds.length}</span>
+          </div>
+          <div class="organize-group-tabs">${renderOrganizeGroupTabs(looseIds)}</div>
+        </div>
+      ` : '';
+
+      return `
+        <div class="organize-window" data-window-index="${widx}">
+          <label class="organize-window-header">
+            <input type="checkbox" class="organize-window-check" data-window-index="${widx}" checked>
+            <span class="organize-window-name">🪟 ${escapeHtml(w.name)}</span>
+            <span class="organize-group-count">${total}</span>
+          </label>
+          <div class="organize-window-groups">${groupsHtml}${looseHtml}</div>
+        </div>
+      `;
+    }).join('');
+
+    bodyHtml = `
+      <div class="organize-summary">建议拆成 ${state.plan.windows.length} 个窗口${scopeNote ? ` · ${scopeNote}` : ''}。勾选的窗口会被新建，并把对应标签移入、按分组归类。</div>
+      ${windowsHtml}
+    `;
+    footerHtml = `
+      <button class="btn-cancel-organize">取消</button>
+      <button class="btn-apply-organize">应用整理</button>
+    `;
+  } else if (state.plan) {
+    // 扁平分组模式（自定义提示词回退）
+    const existingNames = state.existingNames || [];
+    const groupsHtml = state.plan.groups.map((g, idx) => {
+      const merge = existingNames.includes((g.name || '').trim().toLowerCase());
+      return `
+        <div class="organize-group" data-group-index="${idx}">
+          <label class="organize-group-header">
+            <input type="checkbox" class="organize-group-check" data-group-index="${idx}" checked>
+            ${colorDot(g.color)}
+            <span class="organize-group-name">${escapeHtml(g.name)}</span>
+            ${merge ? '<span class="organize-merge-badge">并入已有</span>' : ''}
+            <span class="organize-group-count">${g.tabIds.length}</span>
+          </label>
+          <div class="organize-group-tabs">${renderOrganizeGroupTabs(g.tabIds)}</div>
+        </div>
+      `;
+    }).join('');
+
+    bodyHtml = `
+      <div class="organize-summary">建议 ${state.plan.groups.length} 个分组${scopeNote ? ` · ${scopeNote}` : ''}。取消勾选可排除某个分组；同一分组跨窗口的标签会在各自窗口分别建组。</div>
+      ${groupsHtml}
+    `;
+    footerHtml = `
+      <button class="btn-cancel-organize">取消</button>
+      <button class="btn-apply-organize">应用分组</button>
+    `;
+  }
+
+  const panel = document.createElement('div');
+  panel.className = 'organize-panel';
+  panel.innerHTML = `
+    <div class="organize-header">
+      <h2>✨ AI 整理</h2>
+      <button class="organize-close" title="Close">✕</button>
+    </div>
+    <div class="organize-body">${bodyHtml}</div>
+    <div class="organize-footer">${footerHtml}</div>
+  `;
+
+  // 把方案挂到面板上供应用时读取
+  panel._plan = state.plan || null;
+
+  panel.querySelector('.organize-close').addEventListener('click', hideOrganizePanel);
+  const cancelBtn = panel.querySelector('.btn-cancel-organize');
+  if (cancelBtn) cancelBtn.addEventListener('click', hideOrganizePanel);
+
+  const retryBtn = panel.querySelector('.btn-retry-organize');
+  if (retryBtn) retryBtn.addEventListener('click', () => { hideOrganizePanel(); startOrganize(state.scope || 'ungrouped'); });
+
+  const applyBtn = panel.querySelector('.btn-apply-organize');
+  if (applyBtn) {
+    applyBtn.addEventListener('click', async () => {
+      const plan = panel._plan;
+      if (!plan) return;
+
+      applyBtn.disabled = true;
+      const originalText = applyBtn.textContent;
+      applyBtn.textContent = '应用中…';
+
+      try {
+        // 仅未分组模式启用「自适应并入已有分组」
+        const allowMerge = state.scope !== 'all';
+        const mergeNote = m => (m ? `、并入 ${m} 个已有分组` : '');
+        let toastMsg = '';
+        if (plan.mode === 'windows') {
+          const selected = [];
+          panel.querySelectorAll('.organize-window-check').forEach(cb => {
+            if (cb.checked) {
+              const idx = parseInt(cb.dataset.windowIndex);
+              if (plan.windows[idx]) selected.push(plan.windows[idx]);
+            }
+          });
+          if (selected.length === 0) {
+            showToast('未选择任何窗口');
+            applyBtn.disabled = false;
+            applyBtn.textContent = originalText;
+            return;
+          }
+          const { windowsCreated, groupsCreated, merged } = await applyWindowsPlan(selected, allowMerge);
+          toastMsg = `已整理 ${windowsCreated} 个窗口、新建 ${groupsCreated} 个分组${mergeNote(merged)}`;
+        } else {
+          const selected = [];
+          panel.querySelectorAll('.organize-group-check').forEach(cb => {
+            if (cb.checked) {
+              const idx = parseInt(cb.dataset.groupIndex);
+              if (plan.groups[idx]) selected.push(plan.groups[idx]);
+            }
+          });
+          if (selected.length === 0) {
+            showToast('未选择任何分组');
+            applyBtn.disabled = false;
+            applyBtn.textContent = originalText;
+            return;
+          }
+          const { created, merged } = await applyGroupsPlan(selected, allowMerge);
+          toastMsg = `新建 ${created} 个分组${mergeNote(merged)}`;
+        }
+        hideOrganizePanel();
+        showToast(toastMsg);
+      } catch (err) {
+        console.error('Apply organize failed:', err);
+        showToast('应用失败：' + (err.message || err));
+        applyBtn.disabled = false;
+        applyBtn.textContent = originalText;
+      }
+    });
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'organize-overlay';
+  overlay.addEventListener('click', hideOrganizePanel);
+
+  document.body.appendChild(overlay);
+  document.body.appendChild(panel);
+}
+
+function domainOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return '';
+  }
+}
+
+// 收集当前已有分组（带名字、颜色、代表性域名），供模型判断是否并入
+async function getExistingGroupsInfo() {
+  try {
+    const groups = await chrome.tabGroups.query({});
+    return groups
+      .filter(g => g.title && g.title.trim())
+      .map(g => {
+        const domains = [...new Set(
+          allTabs.filter(t => t.groupId === g.id).map(t => domainOf(t.url)).filter(Boolean)
+        )].slice(0, 6);
+        return { name: g.title, color: g.color, domains };
+      });
+  } catch (err) {
+    console.error('Failed to read existing groups:', err);
+    return [];
+  }
+}
+
+// 按规整后的标题索引已有分组（首个命中优先），用于应用时判断并入
+async function getExistingGroupsByTitle() {
+  const map = new Map();
+  try {
+    const groups = await chrome.tabGroups.query({});
+    for (const g of groups) {
+      const key = (g.title || '').trim().toLowerCase();
+      if (key && !map.has(key)) map.set(key, g);
+    }
+  } catch (err) {
+    console.error('Failed to index existing groups:', err);
+  }
+  return map;
+}
+
+// 窗口模式：为每个选中的「窗口」新建浏览器窗口，把标签移入并按分组归类
+// allowMerge=true 时，名字命中已有分组的会并入现有分组（不新建窗口/分组）
+async function applyWindowsPlan(windows, allowMerge = false) {
+  let windowsCreated = 0;
+  let groupsCreated = 0;
+  let merged = 0;
+
+  const existing = allowMerge ? await getExistingGroupsByTitle() : new Map();
+
+  for (const w of windows) {
+    // 先把命中已有分组的拆出来并入，剩下的才进新窗口
+    const newGroups = [];
+    for (const g of w.groups) {
+      const ids = g.tabIds.filter(id => allTabs.find(t => t.id === id));
+      if (!ids.length) continue;
+      const match = existing.get((g.name || '').trim().toLowerCase());
+      if (match) {
+        try {
+          await chrome.tabs.group({ tabIds: ids, groupId: match.id });
+          merged++;
+        } catch (err) {
+          console.error('Failed to merge into group:', g.name, err);
+        }
+      } else {
+        newGroups.push({ ...g, tabIds: ids });
+      }
+    }
+
+    // 进新窗口的标签（去重）
+    const allIds = [];
+    for (const g of newGroups) {
+      for (const id of g.tabIds) {
+        if (!allIds.includes(id)) allIds.push(id);
+      }
+    }
+    if (allIds.length < 2) continue;
+
+    try {
+      // 用第一个标签创建新窗口，再移入其余标签
+      const newWindow = await chrome.windows.create({ tabId: allIds[0] });
+      if (allIds.length > 1) {
+        await chrome.tabs.move(allIds.slice(1), { windowId: newWindow.id, index: -1 });
+      }
+
+      // 设置窗口名（AI 建议的名字）并立即持久化
+      // 立即写入很重要：移动标签可能清空并关闭当前侧栏所在窗口，导致脚本中断，
+      // 若等到最后才保存，新窗口名会丢失。
+      windowNames[newWindow.id] = w.name;
+      await chrome.storage.local.set({ windowNames });
+
+      // 在新窗口里创建分组（单 tab 不成组，标签已随窗口移入但不归类）
+      for (const g of newGroups) {
+        const ids = g.tabIds.filter(id => allIds.includes(id));
+        if (ids.length < 2) continue;
+        try {
+          const groupId = await chrome.tabs.group({
+            tabIds: ids,
+            createProperties: { windowId: newWindow.id },
+          });
+          await chrome.tabGroups.update(groupId, { title: g.name, color: g.color });
+          groupsCreated++;
+        } catch (err) {
+          console.error('Failed to create group:', g.name, err);
+        }
+      }
+      windowsCreated++;
+    } catch (err) {
+      console.error('Failed to create window:', w.name, err);
+    }
+  }
+
+  await chrome.storage.local.set({ windowNames });
+  await persistWindowNameRegistry();
+  setTimeout(() => loadTabs(), 200);
+  return { windowsCreated, groupsCreated, merged };
+}
+
+// 扁平分组模式：名字命中已有分组则并入，否则按各自窗口新建 Chrome Tab Group
+async function applyGroupsPlan(groups, allowMerge = false) {
+  let created = 0;
+  let merged = 0;
+
+  const existing = allowMerge ? await getExistingGroupsByTitle() : new Map();
+
+  for (const g of groups) {
+    const ids = g.tabIds.filter(id => allTabs.find(t => t.id === id));
+    if (!ids.length) continue;
+
+    const match = existing.get((g.name || '').trim().toLowerCase());
+    if (match) {
+      // 并入已有分组：标签会移到该分组所在窗口（单个标签也允许并入）
+      try {
+        await chrome.tabs.group({ tabIds: ids, groupId: match.id });
+        merged++;
+      } catch (err) {
+        console.error('Failed to merge into group:', g.name, err);
+      }
+      continue;
+    }
+
+    // 新建：跨窗口的标签在各自窗口分别建组，单 tab 不成组
+    const byWindow = new Map();
+    for (const id of ids) {
+      const tab = allTabs.find(t => t.id === id);
+      if (!byWindow.has(tab.windowId)) byWindow.set(tab.windowId, []);
+      byWindow.get(tab.windowId).push(id);
+    }
+    for (const [windowId, wids] of byWindow) {
+      if (wids.length < 2) continue;
+      try {
+        const groupId = await chrome.tabs.group({
+          tabIds: wids,
+          createProperties: { windowId },
+        });
+        await chrome.tabGroups.update(groupId, { title: g.name, color: g.color });
+        created++;
+      } catch (err) {
+        console.error('Failed to create group:', g.name, 'in window', windowId, err);
+      }
+    }
+  }
+  setTimeout(() => loadTabs(), 150);
+  return { created, merged };
+}
+
+function hideOrganizePanel() {
+  const panel = document.querySelector('.organize-panel');
+  const overlay = document.querySelector('.organize-overlay');
+  if (panel) panel.remove();
+  if (overlay) overlay.remove();
+}
+
 // ============ 设置面板 ============
+
+// ============ LLM 配置 ============
+
+async function loadLlmConfig() {
+  const result = await chrome.storage.local.get('llmConfig');
+  return { ...DEFAULT_LLM_CONFIG, ...(result.llmConfig || {}) };
+}
+
+async function saveLlmConfig(config) {
+  await chrome.storage.local.set({ llmConfig: config });
+}
 
 async function showSettingsPanel() {
   hideSettingsPanel();
@@ -3226,6 +3724,8 @@ async function showSettingsPanel() {
   const commands = await chrome.commands.getAll();
   const actionCmd = commands.find(c => c.name === '_execute_action');
   const currentShortcut = actionCmd?.shortcut || 'Not set';
+
+  const llm = await loadLlmConfig();
   
   const panel = document.createElement('div');
   panel.className = 'settings-panel';
@@ -3249,6 +3749,31 @@ async function showSettingsPanel() {
           <p>再按一次可关闭侧边栏</p>
         </div>
       </div>
+
+      <div class="settings-section">
+        <h3>🤖 AI 整理（LLM）</h3>
+        <p class="settings-hint">OpenAI 兼容接口，用于把标签智能分组。Key 仅保存在本地。</p>
+        <div class="settings-field">
+          <label>Base URL</label>
+          <input type="text" id="llmBaseUrl" placeholder="${escapeHtml(DEFAULT_LLM_CONFIG.baseUrl)}" value="${escapeHtml(llm.baseUrl)}">
+        </div>
+        <div class="settings-field">
+          <label>API Key</label>
+          <input type="password" id="llmApiKey" placeholder="sk-..." value="${escapeHtml(llm.apiKey)}">
+        </div>
+        <div class="settings-field">
+          <label>Model</label>
+          <input type="text" id="llmModel" placeholder="${escapeHtml(DEFAULT_LLM_CONFIG.model)}" value="${escapeHtml(llm.model)}">
+        </div>
+        <div class="settings-field">
+          <label>系统提示词（高级，可自定义分组/分窗口逻辑）
+            <button class="btn-reset-prompt" type="button" title="恢复默认提示词">↺ 默认</button>
+          </label>
+          <textarea id="llmPrompt" rows="8" spellcheck="false">${escapeHtml(llm.prompt || DEFAULT_ORGANIZE_PROMPT)}</textarea>
+          <p class="settings-hint">输出必须是规定的 JSON 结构，否则无法解析。</p>
+        </div>
+        <button class="btn-save-llm">💾 保存 AI 配置</button>
+      </div>
     </div>
   `;
   
@@ -3256,6 +3781,23 @@ async function showSettingsPanel() {
   panel.querySelector('.settings-close').addEventListener('click', hideSettingsPanel);
   panel.querySelector('.btn-customize-shortcuts').addEventListener('click', () => {
     chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+  });
+  const resetPromptBtn = panel.querySelector('.btn-reset-prompt');
+  if (resetPromptBtn) {
+    resetPromptBtn.addEventListener('click', () => {
+      panel.querySelector('#llmPrompt').value = DEFAULT_ORGANIZE_PROMPT;
+    });
+  }
+  panel.querySelector('.btn-save-llm').addEventListener('click', async () => {
+    const promptVal = panel.querySelector('#llmPrompt').value.trim();
+    const config = {
+      baseUrl: panel.querySelector('#llmBaseUrl').value.trim() || DEFAULT_LLM_CONFIG.baseUrl,
+      apiKey: panel.querySelector('#llmApiKey').value.trim(),
+      model: panel.querySelector('#llmModel').value.trim() || DEFAULT_LLM_CONFIG.model,
+      prompt: promptVal || DEFAULT_ORGANIZE_PROMPT,
+    };
+    await saveLlmConfig(config);
+    showToast('AI 配置已保存');
   });
   
   // 遮罩
@@ -3324,6 +3866,17 @@ function setupScrollSync() {
         collapsedGroups = new Set(changes.collapsedGroups.newValue || []);
       }
       // 重新渲染以应用新的折叠状态
+      renderTabList();
+    }
+
+    // 同步窗口名 / 窗口顺序（让所有侧栏实时反映重命名、AI 整理等改动）
+    if (changes.windowNames || changes.windowOrder) {
+      if (changes.windowNames) {
+        windowNames = changes.windowNames.newValue || {};
+      }
+      if (changes.windowOrder) {
+        windowOrder = changes.windowOrder.newValue || [];
+      }
       renderTabList();
     }
   });
