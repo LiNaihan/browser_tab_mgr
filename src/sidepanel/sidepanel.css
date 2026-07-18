@@ -471,6 +471,51 @@ body {
   cursor: pointer;
   flex-shrink: 0;
 }
+/* 搜索命中的归档标签：整段灰显，与实时标签区分 */
+.archived-search-section {
+  margin-top: 8px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 4px;
+}
+
+.archived-search-header {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 6px 12px 4px;
+  opacity: 0.8;
+}
+
+.tab-item.archived-search-item {
+  opacity: 0.55;
+}
+
+.tab-item.archived-search-item:hover {
+  opacity: 0.9;
+  background: var(--bg-hover);
+}
+
+.tab-item.archived-search-item .tab-title {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archived-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 1px 6px;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 
 .tab-item:hover .tab-close {
   display: flex;

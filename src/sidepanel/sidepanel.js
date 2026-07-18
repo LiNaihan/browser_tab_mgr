@@ -535,8 +535,11 @@ function renderTabList() {
   const scrollTop = container ? container.scrollTop : 0;
   
   const filteredTabs = filterTabs(allTabs, searchQuery);
-  
-  if (filteredTabs.length === 0) {
+
+  // 仅在有搜索词时额外收集命中的归档标签（空搜索时保持原视图不变）
+  archivedSearchMatches = searchQuery ? collectArchivedMatches(searchQuery) : [];
+
+  if (filteredTabs.length === 0 && archivedSearchMatches.length === 0) {
     elements.tabList.innerHTML = `
       <div class="empty-state">
         <div class="empty-icon">📭</div>
@@ -627,7 +630,10 @@ function renderTabGroup(group) {
   const color = groupInfo?.color || 'grey';
   const title = groupInfo?.title || 'Unnamed Group';
   const isCollapsed = collapsedGroups.has(group.id);
-  
+
+  // 搜索命中的归档标签放在列表底部，灰显并标注 Archived
+  html += renderArchivedMatches(archivedSearchMatches);
+
   let html = `
     <div class="tab-group${isCollapsed ? ' collapsed' : ''}" data-group-id="${group.id}" data-color="${color}">
       <div class="group-header">
@@ -1302,6 +1308,15 @@ function setupWindowDragDelegation() {
     const tabItem = e.target.closest('.tab-item');
     const groupHeader = e.target.closest('.group-header');
     
+  // 搜索命中的归档标签：点击即恢复（需在通用 tab-item 处理之前拦截）
+  const archItem = e.target.closest('.archived-search-item');
+  if (archItem) {
+    e.stopPropagation();
+    const idx = parseInt(archItem.dataset.archIndex);
+    if (Number.isInteger(idx)) restoreArchivedSearchMatch(idx);
+    return;
+  }
+
     // 如果在 window-header 内，且不在 tab-item 或 group-header 内
     if (windowHeader && !tabItem && !groupHeader) {
       handleWindowDragStart(e);
