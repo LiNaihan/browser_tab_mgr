@@ -1479,18 +1479,7 @@ function handleWindowDragStart(e) {
     e.preventDefault();
     return;
   }
-  
-  // 只允许在全部窗口折叠时拖动（临时方案，展开时拖动有 bug）
-  const allWindowSections = document.querySelectorAll('.window-section');
-  const allCollapsed = Array.from(allWindowSections).every(section => 
-    section.classList.contains('collapsed')
-  );
-  
-  if (!allCollapsed) {
-    e.preventDefault();
-    return;
-  }
-  
+
   const windowId = parseInt(header.dataset.windowId);
   draggedWindow = windowId;
   
@@ -1529,13 +1518,14 @@ function handleWindowDragOver(e) {
   
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
-  
-  const header = e.target.closest('.window-header');
-  if (header) {
-    const targetWindowId = parseInt(header.dataset.windowId);
+
+  // 以整个 window-section 作为落点（支持窗口展开时在其正文区域悬停）
+  const section = e.target.closest('.window-section');
+  if (section) {
+    const targetWindowId = parseInt(section.dataset.windowId);
+    document.querySelectorAll('.window-drag-over').forEach(el => el.classList.remove('window-drag-over'));
     if (targetWindowId !== draggedWindow) {
-      document.querySelectorAll('.window-drag-over').forEach(el => el.classList.remove('window-drag-over'));
-      header.closest('.window-section').classList.add('window-drag-over');
+      section.classList.add('window-drag-over');
     }
   }
   
@@ -1613,7 +1603,13 @@ function showWindowContextMenu(x, y, windowId) {
   
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
   menu.style.top = `${Math.min(y, window.innerHeight - 120)}px`;
-  
+
+  // 拖拽窗口时：整个窗口区域都作为排序落点（不仅是标题栏）
+  if (draggedWindow) {
+    handleWindowDragOver(e);
+    return;
+  }
+
   menu.addEventListener('click', async (e) => {
     const item = e.target.closest('.context-menu-item');
     if (!item) return;
@@ -1704,7 +1700,13 @@ function showWindowContextMenu(x, y, windowId) {
     
     hideContextMenu();
   });
-  
+
+  // 拖拽窗口时：在窗口区域任意位置松手都触发窗口排序
+  if (draggedWindow) {
+    await handleWindowDrop(e);
+    return;
+  }
+
   // 遮罩层
   const overlay = document.createElement('div');
   overlay.className = 'context-menu-overlay';
@@ -1749,7 +1751,7 @@ function showGroupContextMenu(x, y, groupId, windowId) {
   
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
   menu.style.top = `${Math.min(y, window.innerHeight - 200)}px`;
-  
+
   menu.addEventListener('click', async (e) => {
     const item = e.target.closest('.context-menu-item');
     if (!item) return;
@@ -1817,7 +1819,7 @@ function showGroupContextMenu(x, y, groupId, windowId) {
         break;
     }
   });
-  
+
   // 为 "Move to..." 添加悬停事件
   const moveToItem = menu.querySelector('[data-action="move-to"]');
   if (moveToItem) {
