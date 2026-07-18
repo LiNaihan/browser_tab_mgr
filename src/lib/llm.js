@@ -46,9 +46,21 @@ function getDomain(url) {
   }
 }
 
-/** 规整 baseUrl：去掉结尾斜杠 */
+/**
+ * 规整 baseUrl：去掉结尾斜杠；若只填到域名（路径为空）则自动补 /v1。
+ * 例：https://host → https://host/v1；https://host/v1 保持不变；带自定义路径的不动。
+ */
 function normalizeBaseUrl(baseUrl) {
-  return (baseUrl || DEFAULT_LLM_CONFIG.baseUrl).replace(/\/+$/, '');
+  const raw = (baseUrl || DEFAULT_LLM_CONFIG.baseUrl).replace(/\/+$/, '');
+  try {
+    const u = new URL(raw);
+    if (u.pathname === '' || u.pathname === '/') {
+      return `${u.origin}/v1`;
+    }
+  } catch {
+    // 非法 URL 交给 fetch 报错
+  }
+  return raw;
 }
 
 function buildUserPrompt(tabs, existingGroups = []) {
@@ -186,6 +198,7 @@ export async function analyzeTabs(tabs, config, existingGroups = []) {
     ],
     response_format: { type: 'json_object' },
   };
+    // 不发 temperature：部分模型（如 claude-opus-4-8）已废弃该参数，带上会 400。
 
   let resp;
   try {
