@@ -10,7 +10,7 @@
   <nav class="sidebar">
     <div class="logo">
       <h1>📑 Smart Tab Cleaner</h1>
-      <span class="version">v0.2.1</span>
+      <span class="version">v0.3.0</span>
     </div>
     <ul class="nav-list">
       <li><a href="index.html">🏠 概述</a></li>
@@ -48,8 +48,8 @@
           </tr>
           <tr>
             <td>启动时自动加载</td>
-            <td>插件启动后（包括重装后），自动从外部路径加载上次的 checkpoint</td>
-            <td><span class="badge todo">待定</span></td>
+            <td>重启后布局改为依赖 Chrome 自带「继续上次会话」（含 tab group）；插件仅负责按 组名+域名指纹 把常驻工作区元数据重贴回复现的组</td>
+            <td><span class="badge done">已决策</span></td>
           </tr>
         </tbody>
       </table>
@@ -64,8 +64,8 @@
         <tbody>
           <tr>
             <td>窗口展开时拖动异常</td>
-            <td>窗口展开状态下，只有第一个窗口能响应拖动。临时方案：只允许全部折叠时拖动窗口排序</td>
-            <td><span class="badge todo">待修复</span></td>
+            <td>展开状态下只有第一个窗口能响应拖动。v0.3.0 已修复：拖窗口时整个 .window-section 都作落点，去掉「仅全折叠可拖」的临时限制</td>
+            <td><span class="badge done">已修复</span></td>
           </tr>
         </tbody>
       </table>
@@ -90,8 +90,8 @@
           </tr>
           <tr>
             <td>编辑 Tab Group</td>
-            <td>修改分组名称和颜色</td>
-            <td><span class="badge todo">待开发</span></td>
+            <td>右键修改分组名称（内联）和颜色（9 色板）</td>
+            <td><span class="badge done">已完成</span></td>
           </tr>
           <tr>
             <td>树形结构</td>
@@ -111,8 +111,8 @@
         <tbody>
           <tr>
             <td>AI 智能分组</td>
-            <td>基于内容自动分类标签</td>
-            <td><span class="badge todo">待开发</span></td>
+            <td>基于内容自动分类；带 per-tab 接受/拒绝 preview；常驻工作区按工作内容描述精准归位</td>
+            <td><span class="badge done">已完成</span></td>
           </tr>
           <tr>
             <td>重复标签检测</td>
@@ -126,13 +126,13 @@
           </tr>
           <tr>
             <td>陈旧标签建议</td>
-            <td>识别长期未访问的标签</td>
-            <td><span class="badge todo">待开发</span></td>
+            <td>AI 整理时检出 7 天以上未访问的标签，逐条可选 Archive（常驻组）/ Close</td>
+            <td><span class="badge done">已完成</span></td>
           </tr>
           <tr>
             <td>自动整理</td>
-            <td>一键智能整理所有标签</td>
-            <td><span class="badge todo">待开发</span></td>
+            <td>一键智能整理所有标签；未选中的自动移入新的无分组窗口</td>
+            <td><span class="badge done">已完成</span></td>
           </tr>
         </tbody>
       </table>
@@ -140,8 +140,26 @@
 
     <section class="card">
       <h2>版本历史</h2>
-      
-      <h3>v0.2.2 <span class="badge done">开发中</span></h3>
+
+      <h3>v0.3.0</h3>
+      <ul>
+        <li>✅ 常驻工作区分组（Pin）：右键固定分组为长期工作区，带工作内容描述</li>
+        <li>✅ Unpin 为软标记（保留归档，可复活），pin/unpin 不影响任何 tab</li>
+        <li>✅ 重启后按「组名+域名指纹」把常驻元数据重贴回复现的分组</li>
+        <li>✅ 常驻组内 per-tab Archive（右键追加项，不改默认关闭）+ 悬停子菜单恢复/丢弃</li>
+        <li>✅ AI 整理：per-tab 接受/拒绝 preview（窗口/组为父级开关）</li>
+        <li>✅ AI 整理：自动总结空描述的常驻组（未手动改过的）用于精准归位</li>
+        <li>✅ AI 整理：检出 7 天以上未访问的陈旧标签，逐条可选 Archive/Close（默认不动）</li>
+        <li>✅ 全部重新整理：未选中的标签自动移入新的无分组窗口</li>
+        <li>✅ 编辑 Tab Group：右键内联改名 + 9 色板改色</li>
+        <li>✅ 搜索栏可搜到已归档标签（灰显 + Archived 标注，点击恢复）</li>
+        <li>✅ 设置：从网关拉取模型列表做下拉选择（OpenAI 兼容 /models）+ 自定义兜底</li>
+        <li>✅ Export/Import 包含 pinnedGroups、windowNames 与指纹注册表（备份可救回窗口名）</li>
+        <li>🐛 修复：窗口展开时只有第一个窗口能拖动排序</li>
+        <li>🐛 修复：LLM 网关兼容——不再发已废弃的 temperature、bare URL 自动补 /v1</li>
+      </ul>
+
+      <h3>v0.2.2 <span class="badge done">已完成</span></h3>
       <ul>
         <li>✅ 定位当前 tab 按钮</li>
         <li>✅ Tab Discard 功能（Group/Window 右键菜单）</li>
