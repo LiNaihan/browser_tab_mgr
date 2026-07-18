@@ -1802,3 +1802,38 @@ body {
   background: var(--bg-hover);
 }
 
+/* Model 下拉选择 */
+.settings-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 拉取模型按钮（与 ↺ 默认 同风格） */
+.btn-fetch-models {
+  float: right;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.btn-fetch-models:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+

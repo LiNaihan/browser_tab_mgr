@@ -10,6 +10,8 @@ import {
 import {
   analyzeTabs,
   DEFAULT_LLM_CONFIG,
+  summarizeGroups,
+  fetchModels,
   DEFAULT_ORGANIZE_PROMPT,
   VALID_GROUP_COLORS,
 } from '../lib/llm.js';
@@ -3764,8 +3766,15 @@ async function showSettingsPanel() {
           <input type="password" id="llmApiKey" placeholder="sk-..." value="${escapeHtml(llm.apiKey)}">
         </div>
         <div class="settings-field">
-          <label>Model</label>
-          <input type="text" id="llmModel" placeholder="${escapeHtml(DEFAULT_LLM_CONFIG.model)}" value="${escapeHtml(llm.model)}">
+          <label>Model
+            <button class="btn-fetch-models" id="llmFetchModels" type="button" title="从网关拉取模型列表">🔄 拉取模型</button>
+          </label>
+          <select id="llmModel">
+            <option value="${escapeHtml(llm.model)}" selected>${escapeHtml(llm.model || DEFAULT_LLM_CONFIG.model)}</option>
+            <option value="__custom__">自定义…</option>
+          </select>
+          <input type="text" id="llmModelCustom" placeholder="${escapeHtml(DEFAULT_LLM_CONFIG.model)}" value="" style="display:none; margin-top:6px;">
+          <p class="settings-hint" id="llmModelStatus"></p>
         </div>
         <div class="settings-field">
           <label>系统提示词（高级，可自定义分组/分窗口逻辑）
@@ -3795,7 +3804,7 @@ async function showSettingsPanel() {
     const config = {
       baseUrl: panel.querySelector('#llmBaseUrl').value.trim() || DEFAULT_LLM_CONFIG.baseUrl,
       apiKey: panel.querySelector('#llmApiKey').value.trim(),
-      model: panel.querySelector('#llmModel').value.trim() || DEFAULT_LLM_CONFIG.model,
+      model: modelVal,
       prompt: promptVal || DEFAULT_ORGANIZE_PROMPT,
     };
     await saveLlmConfig(config);
@@ -3888,3 +3897,73 @@ function setupScrollSync() {
 
 document.addEventListener('DOMContentLoaded', init);
 
+
+  // ===== Model 下拉：拉取 / 自定义 =====
+  const modelSelect = panel.querySelector('#llmModel');
+  const modelCustom = panel.querySelector('#llmModelCustom');
+  const modelStatus = panel.querySelector('#llmModelStatus');
+  const CUSTOM_OPT = '__custom__';
+
+  // 选中「自定义…」时展开手动输入框
+  const syncCustomVisibility = () => {
+    modelCustom.style.display = modelSelect.value === CUSTOM_OPT ? '' : 'none';
+  };
+  modelSelect.addEventListener('change', syncCustomVisibility);
+
+  // 用模型列表重建下拉；尽量保留当前选中值，并始终保留「自定义…」项
+  const populateModelSelect = (models) => {
+    const prev = modelSelect.value === CUSTOM_OPT
+      ? (modelCustom.value.trim() || llm.model)
+      : (modelSelect.value || llm.model);
+    modelSelect.innerHTML = '';
+    const ids = new Set();
+    for (const m of models) {
+      if (!m || !m.id || ids.has(m.id)) continue;
+      ids.add(m.id);
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      modelSelect.appendChild(opt);
+    }
+    // 当前配置的 model 不在列表里时，补一个以免丢失
+    if (prev && !ids.has(prev)) {
+      const opt = document.createElement('option');
+      opt.value = prev;
+      opt.textContent = prev;
+      modelSelect.appendChild(opt);
+    }
+    const customOpt = document.createElement('option');
+    customOpt.value = CUSTOM_OPT;
+    customOpt.textContent = '自定义…';
+    modelSelect.appendChild(customOpt);
+    modelSelect.value = prev || DEFAULT_LLM_CONFIG.model;
+    syncCustomVisibility();
+  };
+
+  const doFetchModels = async (silent) => {
+    const baseUrl = panel.querySelector('#llmBaseUrl').value.trim() || DEFAULT_LLM_CONFIG.baseUrl;
+    const apiKey = panel.querySelector('#llmApiKey').value.trim();
+    if (!apiKey) {
+      if (!silent) modelStatus.textContent = '请先填写 API Key';
+      return;
+    }
+    if (!silent) modelStatus.textContent = '拉取中…';
+    try {
+      const models = await fetchModels({ baseUrl, apiKey });
+      populateModelSelect(models);
+      modelStatus.textContent = `已拉取 ${models.length} 个模型`;
+    } catch (err) {
+      if (!silent) modelStatus.textContent = err.message || '拉取失败';
+    }
+  };
+
+  const fetchBtn = panel.querySelector('#llmFetchModels');
+  if (fetchBtn) fetchBtn.addEventListener('click', () => doFetchModels(false));
+
+  // 打开面板时若已配置 Key，自动拉取一次（静默、忽略错误）
+  if (llm.apiKey) doFetchModels(true);
+
+    // model：选「自定义…」时取手动输入框，否则取下拉选中值
+    const modelVal = (modelSelect.value === CUSTOM_OPT
+      ? modelCustom.value.trim()
+      : modelSelect.value.trim()) || DEFAULT_LLM_CONFIG.model;

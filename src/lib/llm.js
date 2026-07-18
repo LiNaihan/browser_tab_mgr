@@ -237,3 +237,136 @@ export async function analyzeTabs(tabs, config, existingGroups = []) {
   result.raw = content;
   return result;
 }
+
+/**
+ * 拉取网关支持的模型列表（OpenAI 兼容的 GET /models）。
+ * @param {Object} config { baseUrl, apiKey }
+ * @returns {Promise<Array<{id:string,label:string}>>} 形如 [{id, label}]；结构异常时返回 []
+ */
+export async function fetchModels(config) {
+  const cfg = { ...DEFAULT_LLM_CONFIG, ...(config || {}) };
+  if (!cfg.apiKey) throw new Error('未配置 API Key');
+
+  const endpoint = `${normalizeBaseUrl(cfg.baseUrl)}/models`;
+
+  let resp;
+  try {
+    resp = await fetch(endpoint, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${cfg.apiKey}`,
+      },
+    });
+  } catch (err) {
+    throw new Error(`无法连接到 LLM 服务：${err.message}`);
+  }
+
+  if (!resp.ok) {
+    let detail = '';
+    try {
+      const errJson = await resp.json();
+      detail = errJson?.error?.message || JSON.stringify(errJson);
+    } catch {
+      detail = await resp.text().catch(() => '');
+    }
+    throw new Error(`拉取模型失败 (${resp.status}): ${detail || resp.statusText}`);
+  }
+
+  let json;
+  try {
+    json = await resp.json();
+  } catch {
+    return [];
+  }
+  if (!json || !Array.isArray(json.data)) return [];
+
+  return json.data
+    .filter(m => m && m.id)
+    .map(m => ({ id: m.id, label: m.display_name || m.id }));
+}
+
+/**
+ * 为常驻工作区分组生成极简「工作内容」摘要（轻量独立调用，供 AI 整理时自动填充空描述）。
+ * 设计上足够健壮：任何失败/模型省略都只是返回空串，绝不抛错、绝不改变整理主流程。
+ * @param {Array} groups [{ name, tabs:[{title,domain}] }]，顺序即 index
+ * @param {Object} config { baseUrl, apiKey, model }
+ * @returns {Promise<string[]>} 与 groups 等长、按 index 对齐的摘要数组（无法概括处为空串）
+ */
+export async function summarizeGroups(groups, config) {
+  const cfg = { ...DEFAULT_LLM_CONFIG, ...(config || {}) };
+  if (!cfg.apiKey) return [];
+  if (!groups || !groups.length) return [];
+
+  const systemPrompt = [
+    '你是工作区描述助手。用户会给你若干「常驻分组」，每个含 index、name 和组内标签（title/domain）。',
+    '请为每个分组生成一句极简的工作内容描述：中文，10-20 字以内，概括这批标签正在做的事，供后续标签归类使用。',
+    '只返回 JSON，不要多余文字。格式：{"summaries":[{"index":0,"text":"..."}]}，index 与输入一一对应；无法概括的可省略该项。',
+  ].join('\n');
+  const userPrompt = JSON.stringify(
+    groups.map((g, i) => ({
+      index: i,
+      name: g.name || '',
+      tabs: (g.tabs || []).map(t => ({ title: t.title || '', domain: t.domain || '' })),
+    })),
+    null,
+    2,
+  );
+
+  const endpoint = `${normalizeBaseUrl(cfg.baseUrl)}/chat/completions`;
+  const body = {
+    // 同上：不发 temperature，避免对已废弃该参数的模型 400。
+    model: cfg.model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+    response_format: { type: 'json_object' },
+  };
+
+  let resp;
+  try {
+    resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cfg.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.error('[LLM] summarizeGroups fetch failed:', err);
+    return [];
+  }
+  if (!resp.ok) {
+    console.error('[LLM] summarizeGroups HTTP', resp.status);
+    return [];
+  }
+
+  let content;
+  try {
+    const data = await resp.json();
+    content = data?.choices?.[0]?.message?.content;
+  } catch {
+    return [];
+  }
+  if (!content) return [];
+
+  let parsed;
+  try {
+    parsed = extractJson(content);
+  } catch {
+    return [];
+  }
+
+  const out = new Array(groups.length).fill('');
+  const arr = Array.isArray(parsed?.summaries)
+    ? parsed.summaries
+    : (Array.isArray(parsed) ? parsed : []);
+  for (const item of arr) {
+    const idx = Number(item?.index);
+    if (Number.isInteger(idx) && idx >= 0 && idx < out.length && typeof item?.text === 'string') {
+      out[idx] = item.text.trim();
+    }
+  }
+  return out;
+}
