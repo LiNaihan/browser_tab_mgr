@@ -1782,6 +1782,40 @@ body {
   cursor: pointer;
 }
 
+.organize-stale-section {
+  margin-bottom: 12px;
+}
+
+.organize-stale-preview-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.organize-stale-preview-item:hover {
+  background: var(--bg-hover);
+}
+
+.organize-stale-ptitle {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.organize-stale-plabel {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
 .organize-stale-label {
   color: var(--text-secondary);
   white-space: nowrap;

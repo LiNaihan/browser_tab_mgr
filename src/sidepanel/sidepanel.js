@@ -3955,13 +3955,28 @@ async function startOrganize(scope = 'ungrouped') {
 
   const meta = { count: candidates.length, pinnedSkipped, groupedSkipped, scope,
     candidateIds: candidates.map(t => t.id) };
-  showOrganizePanel({ loading: true, ...meta });
 
-  // 4C：检出陈旧标签（lastAccessed 超过阈值；无 lastAccessed 视为不陈旧）
+  // 4C：先本地检出陈旧标签，不需要调 API，点击后立刻随 loading 显示，避免面板空白。
+  // 优先用后台自记的「上次激活时间」(tabLastActive)：它跨扩展重载保留，比 lastAccessed
+  // 更准（后者会被重启/重载刷新）；没有自记录的标签才退回 lastAccessed。
   const staleThreshold = Date.now() - STALE_MS;
+  let tabLastActive = {};
+  try {
+    const store = await chrome.storage.local.get('tabLastActive');
+    tabLastActive = store.tabLastActive || {};
+  } catch (err) {
+    console.error('Failed to read tabLastActive:', err);
+  }
+  const effectiveLastActive = t => {
+    const tracked = tabLastActive[t.id];
+    if (typeof tracked === 'number') return tracked;
+    return typeof t.lastAccessed === 'number' ? t.lastAccessed : Date.now();
+  };
   const staleTabIds = candidates
-    .filter(t => typeof t.lastAccessed === 'number' && t.lastAccessed < staleThreshold)
+    .filter(t => effectiveLastActive(t) < staleThreshold)
     .map(t => t.id);
+
+  showOrganizePanel({ loading: true, staleTabIds, ...meta });
 
   try {
     // 4B：先对空描述的常驻组自动总结（写回 description），再取已有分组信息，
@@ -4090,6 +4105,37 @@ function colorDot(color) {
   return `<span class="organize-color-dot" style="background: var(--group-${safe})"></span>`;
 }
 
+// 某 tab 当前所在分组是否为常驻组；返回 pid 或 null
+function tabPinnedPid(t) {
+  if (!t || t.groupId === undefined || t.groupId === -1) return null;
+  const g = allGroups.find(x => x.id === t.groupId);
+  if (!g) return null;
+  const domains = getGroupDomains(allTabs.filter(x => x.groupId === t.groupId));
+  return matchPinnedGroup({ title: g.title, color: g.color }, domains);
+}
+
+// 陈旧标签只读预览（loading 阶段先展示，不依赖 API）：标出 7d+ 与将来可执行的动作
+function renderStalePreview(staleTabIds) {
+  const ids = staleTabIds || [];
+  if (!ids.length) return '';
+  const items = ids.map(id => {
+    const t = allTabs.find(x => x.id === id);
+    if (!t) return '';
+    const action = tabPinnedPid(t) ? 'Archive' : 'Close';
+    return `
+      <div class="organize-stale-preview-item">
+        <span class="organize-stale-badge">⏰ 7d+</span>
+        <span class="organize-stale-ptitle" title="${escapeHtml(t.url || '')}">${escapeHtml(t.title || t.url || 'Tab')}</span>
+        <span class="organize-stale-plabel">${action}</span>
+      </div>`;
+  }).join('');
+  return `
+    <div class="organize-stale-section">
+      <div class="organize-stale-note">⏰ ${ids.length} 个标签 7 天以上未访问；分组建议出来后可逐条 Archive/Close（默认不动）。</div>
+      ${items}
+    </div>`;
+}
+
 function showOrganizePanel(state) {
   hideOrganizePanel();
 
@@ -4104,7 +4150,9 @@ function showOrganizePanel(state) {
     : '';
 
   if (state.loading) {
-    bodyHtml = `<div class="organize-status">🤖 正在分析标签…<br><span class="organize-subtle">${scopeNote}</span></div>`;
+    // 不需要调 API 的陈旧标签先显示出来（分组建议还在等模型返回）
+    bodyHtml = `${renderStalePreview(state.staleTabIds)}
+      <div class="organize-status">🤖 正在分析分组建议…<br><span class="organize-subtle">${scopeNote}</span></div>`;
     footerHtml = `<button class="btn-cancel-organize">取消</button>`;
   } else if (state.error) {
     bodyHtml = `<div class="organize-status error">❌ ${escapeHtml(state.error)}</div>`;
@@ -4283,7 +4331,11 @@ function showOrganizePanel(state) {
           if (s.action === 'archive' && s.pid && pinnedGroups[s.pid]) {
             const rec = pinnedGroups[s.pid];
             if (!Array.isArray(rec.archivedTabs)) rec.archivedTabs = [];
-            rec.archivedTabs.push(captureArchivedTab(tab));
+            if (!Array.isArray(rec.stickyUrls)) rec.stickyUrls = [];
+            if (!rec.stickyUrls.includes(tab.url)) rec.stickyUrls.push(tab.url);
+            if (!rec.archivedTabs.some(a => a.url === tab.url)) {
+              rec.archivedTabs.push(captureArchivedTab(tab));
+            }
             rec.updatedAt = Date.now();
             pinnedTouched = true;
             try { await chrome.tabs.remove(tab.id); staleArchived++; processedIds.add(tab.id); }

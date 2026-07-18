@@ -14,6 +14,67 @@ import {
 const AUTO_SAVE_ALARM = 'auto-save-session';
 const AUTO_SAVE_INTERVAL_MINUTES = 10;
 
+// ============ 标签活跃度追踪（陈旧检测用）============
+// chrome.tabs.Tab.lastAccessed 会在浏览器重启/扩展重载后被刷新，导致所有标签
+// 看起来「刚用过」。这里自己记一份 tabId -> 上次真正激活的时间戳，存 storage：
+// 扩展重载（标签 id 不变）时数据保留；仅整浏览器重启换了 tab id 才会丢，届时退回 lastAccessed。
+const TAB_ACTIVE_KEY = 'tabLastActive';
+
+async function recordTabActive(tabId) {
+  if (typeof tabId !== 'number') return;
+  try {
+    const store = await chrome.storage.local.get(TAB_ACTIVE_KEY);
+    const map = store[TAB_ACTIVE_KEY] || {};
+    map[tabId] = Date.now();
+    await chrome.storage.local.set({ [TAB_ACTIVE_KEY]: map });
+  } catch (err) {
+    console.error('[Stale] recordTabActive failed:', err);
+  }
+}
+
+// 为尚无记录的现存标签播种（用 lastAccessed 或当前时间作起点），并清理已关闭标签的残留
+async function seedTabActivity() {
+  try {
+    const tabs = await chrome.tabs.query({});
+    const store = await chrome.storage.local.get(TAB_ACTIVE_KEY);
+    const map = store[TAB_ACTIVE_KEY] || {};
+    const liveIds = new Set();
+    const now = Date.now();
+    for (const t of tabs) {
+      liveIds.add(t.id);
+      // 只给「没记录过」的标签播种，避免扩展重载时覆盖已有的真实历史
+      if (map[t.id] === undefined) {
+        map[t.id] = typeof t.lastAccessed === 'number' ? t.lastAccessed : now;
+      }
+    }
+    // 清理已不存在的 tabId
+    for (const key of Object.keys(map)) {
+      if (!liveIds.has(Number(key))) delete map[key];
+    }
+    await chrome.storage.local.set({ [TAB_ACTIVE_KEY]: map });
+  } catch (err) {
+    console.error('[Stale] seedTabActivity failed:', err);
+  }
+}
+
+chrome.tabs.onActivated.addListener(({ tabId }) => recordTabActive(tabId));
+chrome.tabs.onCreated.addListener((tab) => recordTabActive(tab.id));
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  try {
+    const store = await chrome.storage.local.get(TAB_ACTIVE_KEY);
+    const map = store[TAB_ACTIVE_KEY] || {};
+    if (map[tabId] !== undefined) {
+      delete map[tabId];
+      await chrome.storage.local.set({ [TAB_ACTIVE_KEY]: map });
+    }
+  } catch (err) {
+    console.error('[Stale] onRemoved cleanup failed:', err);
+  }
+});
+
+// SW 每次唤醒都补种一次（保留已有记录，只补新标签、清残留）
+seedTabActivity();
+
 // 安装时设置侧边栏行为和自动保存
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setOptions({
