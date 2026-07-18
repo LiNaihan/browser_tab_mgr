@@ -1160,26 +1160,30 @@ function handleWindowNameEdit(e) {
   input.focus();
   input.select();
   
-  // 保存函数
+  // 保存函数（guard 防止 Enter 后 blur 二次触发）
+  let done = false;
   const saveName = async () => {
+    if (done) return;
+    done = true;
     const newName = input.value.trim();
     if (newName && newName !== currentName) {
       await saveWindowName(windowId, newName);
     }
-    // 重新渲染
-    renderTabList();
+    // 重新加载后渲染（windowNames 已更新，同时刷新其他 Chrome 数据）
+    await loadTabs();
   };
-  
+
   // 回车保存
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       saveName();
     } else if (e.key === 'Escape') {
+      done = true;
       renderTabList(); // 取消编辑
     }
   });
-  
+
   // 失焦保存
   input.addEventListener('blur', saveName);
 }
@@ -1201,6 +1205,7 @@ function startGroupTitleEdit(groupTitle) {
   const groupHeader = groupTitle.closest('.group-header');
   const tabGroup = groupHeader.closest('.tab-group');
   const groupId = parseInt(tabGroup.dataset.groupId);
+  const pinnedPid = tabGroup.dataset.pinned || null;
 
   // 已经在编辑中
   if (groupTitle.querySelector('input')) return;
@@ -1223,28 +1228,43 @@ function startGroupTitleEdit(groupTitle) {
   // 阻止事件冒泡（避免触发折叠）
   input.addEventListener('click', (e) => e.stopPropagation());
   
-  // 保存函数
+  // 保存函数（guard 防止 Enter 后 blur 二次触发）
+  let done = false;
   const saveName = async () => {
+    if (done) return;
+    done = true;
     const newName = input.value.trim();
-    try {
-      await chrome.tabGroups.update(groupId, { title: newName });
-    } catch (err) {
-      console.error('Failed to update group name:', err);
+    if (newName && newName !== currentName) {
+      try {
+        await chrome.tabGroups.update(groupId, { title: newName });
+        // 乐观更新本地缓存，保证立即 renderTabList 显示新名（不依赖 onUpdated 时序）
+        const g = allGroups.find(x => x.id === groupId);
+        if (g) g.title = newName;
+        // 常驻组按名字匹配绑定：改名后同步 pinnedGroups 记录名，否则丢失 pid 绑定
+        if (pinnedPid && pinnedGroups[pinnedPid]) {
+          pinnedGroups[pinnedPid].name = newName;
+          pinnedGroups[pinnedPid].updatedAt = Date.now();
+          await savePinnedGroups();
+        }
+      } catch (err) {
+        console.error('Failed to update group name:', err);
+      }
     }
-    // 重新渲染
-    renderTabList();
+    // 重新加载 Chrome 最新数据后渲染
+    await loadTabs();
   };
-  
+
   // 回车保存
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       saveName();
     } else if (e.key === 'Escape') {
+      done = true;
       renderTabList(); // 取消编辑
     }
   });
-  
+
   // 失焦保存
   input.addEventListener('blur', saveName);
 }
@@ -2923,24 +2943,26 @@ function listenToTabChanges() {
   // 标签组变化
   chrome.tabGroups.onCreated.addListener(() => loadTabs());
   chrome.tabGroups.onRemoved.addListener(() => loadTabs());
-  chrome.tabGroups.onUpdated.addListener(async (groupId, changeInfo) => {
-    // 如果只是 collapsed 状态变化，同步到侧边栏
-    if (changeInfo.collapsed !== undefined) {
-      const groupElement = document.querySelector(`.tab-group[data-group-id="${groupId}"]`);
-      if (groupElement) {
-        if (changeInfo.collapsed) {
-          collapsedGroups.add(groupId);
-          groupElement.classList.add('collapsed');
-        } else {
-          collapsedGroups.delete(groupId);
-          groupElement.classList.remove('collapsed');
-        }
-        await saveCollapsedState();
+  // 注意：chrome.tabGroups.onUpdated 回调只有一个参数——完整的 TabGroup 对象，
+  // 没有 tabs.onUpdated 那样的 changeInfo。之前误用 (groupId, changeInfo) 导致
+  // 每次都 throw（读 undefined.collapsed），监听器在 loadTabs() 前就挂了 → 改名不刷新。
+  chrome.tabGroups.onUpdated.addListener(async (group) => {
+    const groupElement = document.querySelector(`.tab-group[data-group-id="${group.id}"]`);
+    const knownCollapsed = collapsedGroups.has(group.id);
+    // 仅折叠态变化：局部同步，避免整树重载
+    if (group.collapsed !== knownCollapsed && groupElement) {
+      if (group.collapsed) {
+        collapsedGroups.add(group.id);
+        groupElement.classList.add('collapsed');
+      } else {
+        collapsedGroups.delete(group.id);
+        groupElement.classList.remove('collapsed');
       }
-    } else {
-      // 其他变化（标题、颜色等），重新加载
-      loadTabs();
+      await saveCollapsedState();
+      return;
     }
+    // 其他变化（标题、颜色等）或无对应 DOM：整体重新加载
+    loadTabs();
   });
   
   // 窗口关闭时清理顺序
