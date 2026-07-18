@@ -309,6 +309,83 @@ body {
   border-left-color: rgba(255, 152, 0, 0.7);
 }
 
+/* 常驻工作区分组：更醒目的左边框 + 微弱高亮 */
+.tab-group.pinned {
+  border-left-width: 4px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.group-header .group-pin-badge {
+  font-size: 11px;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+/* 常驻工作区描述编辑弹窗 */
+.pin-description-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10000;
+  width: 260px;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--bg-primary, #1f1f1f);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pin-description-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pin-description-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.pin-description-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: var(--bg-secondary, #2a2a2a);
+  color: var(--text-primary, #eee);
+}
+
+.pin-description-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pin-description-btn {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: transparent;
+  color: var(--text-primary, #eee);
+  cursor: pointer;
+}
+
+.pin-description-btn.save {
+  background: rgba(66, 133, 244, 0.8);
+  border-color: rgba(66, 133, 244, 0.9);
+}
+
+.pin-description-btn:hover {
+  filter: brightness(1.15);
+}
+
 /* 层次 2: Group bar */
 .group-header {
   display: flex;
@@ -394,6 +471,51 @@ body {
   background: rgba(76, 175, 80, 0.35);
 }
 
+/* 搜索命中的归档标签：整段灰显，与实时标签区分 */
+.archived-search-section {
+  margin-top: 8px;
+  border-top: 1px solid var(--border-color);
+  padding-top: 4px;
+}
+
+.archived-search-header {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 6px 12px 4px;
+  opacity: 0.8;
+}
+
+.tab-item.archived-search-item {
+  opacity: 0.55;
+}
+
+.tab-item.archived-search-item:hover {
+  opacity: 0.9;
+  background: var(--bg-hover);
+}
+
+.tab-item.archived-search-item .tab-title {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archived-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 1px 6px;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tab-item.dragging {
   opacity: 0.5;
 }
@@ -471,51 +593,6 @@ body {
   cursor: pointer;
   flex-shrink: 0;
 }
-/* 搜索命中的归档标签：整段灰显，与实时标签区分 */
-.archived-search-section {
-  margin-top: 8px;
-  border-top: 1px solid var(--border-color);
-  padding-top: 4px;
-}
-
-.archived-search-header {
-  font-size: 11px;
-  color: var(--text-secondary);
-  padding: 6px 12px 4px;
-  opacity: 0.8;
-}
-
-.tab-item.archived-search-item {
-  opacity: 0.55;
-}
-
-.tab-item.archived-search-item:hover {
-  opacity: 0.9;
-  background: var(--bg-hover);
-}
-
-.tab-item.archived-search-item .tab-title {
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.archived-badge {
-  margin-left: auto;
-  flex-shrink: 0;
-  font-size: 10px;
-  color: var(--text-secondary);
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  padding: 1px 6px;
-  max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 
 .tab-item:hover .tab-close {
   display: flex;
@@ -714,6 +791,47 @@ body {
   justify-content: space-between;
 }
 
+/* 归档 tab 子菜单行 */
+.context-menu-empty {
+  color: var(--text-secondary);
+  font-style: italic;
+  cursor: default;
+}
+.context-menu-empty:hover {
+  background: transparent;
+}
+.archived-tab-item {
+  gap: 6px;
+}
+.archived-tab-favicon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 2px;
+  object-fit: contain;
+}
+.archived-tab-favicon.placeholder {
+  font-size: 11px;
+  line-height: 14px;
+  text-align: center;
+}
+.archived-tab-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.archived-tab-discard {
+  flex-shrink: 0;
+  padding: 0 4px;
+  color: var(--text-secondary);
+  border-radius: 3px;
+}
+.archived-tab-discard:hover {
+  color: var(--danger);
+  background: var(--bg-hover);
+}
+
 .group-color-dot {
   display: inline-block;
   width: 8px;
@@ -721,6 +839,50 @@ body {
   border-radius: 50%;
   margin-right: 4px;
 }
+
+/* Group Color Picker (context menu) */
+.context-menu-color-label {
+  padding: 4px 12px 2px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.group-color-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 12px 8px;
+}
+
+.group-color-swatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid transparent;
+  box-sizing: border-box;
+  transition: transform 0.1s;
+}
+
+.group-color-swatch:hover {
+  transform: scale(1.15);
+}
+
+.group-color-swatch.selected {
+  border-color: var(--text-primary);
+}
+
+.group-color-swatch[data-color="grey"]   { background: rgb(128, 128, 128); }
+.group-color-swatch[data-color="blue"]   { background: rgb(66, 133, 244); }
+.group-color-swatch[data-color="red"]    { background: rgb(234, 67, 53); }
+.group-color-swatch[data-color="yellow"] { background: rgb(251, 188, 4); }
+.group-color-swatch[data-color="green"]  { background: rgb(52, 168, 83); }
+.group-color-swatch[data-color="pink"]   { background: rgb(233, 30, 99); }
+.group-color-swatch[data-color="purple"] { background: rgb(156, 39, 176); }
+.group-color-swatch[data-color="cyan"]   { background: rgb(0, 188, 212); }
+.group-color-swatch[data-color="orange"] { background: rgb(255, 152, 0); }
 
 .context-menu-separator {
   height: 1px;
@@ -1541,12 +1703,62 @@ body {
   padding: 4px 0;
 }
 
+.organize-tab-check {
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .organize-tab-title {
+  flex: 1;
   font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.organize-tab.is-stale .organize-tab-title {
+  color: var(--text-primary);
+}
+
+/* 并入常驻工作区：更醒目的去向提示 */
+.organize-merge-badge.pinned {
+  background: var(--group-green, #34a853);
+}
+
+/* 陈旧标签处理提示 + per-tab 动作开关 */
+.organize-stale-note {
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+}
+
+.organize-stale {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.organize-stale-badge {
+  color: #e37400;
+  white-space: nowrap;
+}
+
+.organize-stale-action {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.organize-stale-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .organize-footer {
@@ -1655,6 +1867,41 @@ body {
 }
 
 .btn-reset-prompt:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* Model 下拉选择 */
+.settings-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* 拉取模型按钮（与 ↺ 默认 同风格） */
+.btn-fetch-models {
+  float: right;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.btn-fetch-models:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
 }
@@ -1844,41 +2091,6 @@ body {
 }
 
 .btn-customize-shortcuts:hover {
-  background: var(--bg-hover);
-}
-
-/* Model 下拉选择 */
-.settings-field select {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 8px 10px;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--text-primary);
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.settings-field select:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-/* 拉取模型按钮（与 ↺ 默认 同风格） */
-.btn-fetch-models {
-  float: right;
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  font-size: 11px;
-  padding: 1px 6px;
-  cursor: pointer;
-}
-
-.btn-fetch-models:hover {
-  color: var(--text-primary);
   background: var(--bg-hover);
 }
 

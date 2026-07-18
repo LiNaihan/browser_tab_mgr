@@ -24,6 +24,7 @@ export const DEFAULT_ORGANIZE_PROMPT = [
   '- 每个窗口至少包含 2 个标签；尽量让大多数标签都被归类。',
   '- 每个分组至少包含 2 个标签：不要建只有 1 个标签的分组，零散的标签宁可不分组。',
   '- 如果给出了「已有分组」，且某些标签明显属于其中某个，请让该分组的 name 与已有分组的名字完全一致（系统会自动把它们并入现有分组，不会重复建组）；其余标签再新建分组。',
+  '- 已有分组若带有 purpose（工作内容说明），说明它是一个常驻工作区：请优先把语义命中该 purpose 的标签归入该分组（name 与其完全一致），即使域名不同也应归入。',
   '- 如果觉得不需要拆成多个窗口，也可以只返回一个窗口。',
   '只返回 JSON，不要任何额外文字。格式示例（id 用列表里的实际数字）：',
   '{"windows":[{"name":"开发","groups":[{"name":"前端","color":"blue","tabIds":[0,2]},{"name":"文档","color":"cyan","tabIds":[5]}]},{"name":"购物","groups":[{"name":"比价","color":"yellow","tabIds":[1,3]}]}]}',
@@ -71,9 +72,16 @@ function buildUserPrompt(tabs, existingGroups = []) {
   }));
   const lines = [`共 ${tabs.length} 个标签，id 从 0 到 ${tabs.length - 1}。`];
   if (existingGroups && existingGroups.length) {
-    lines.push('已有分组（若标签明显属于其中某个，请复用同名 name 以并入；否则新建）：');
+    const hasPurpose = existingGroups.some(g => g.description && g.description.trim());
+    lines.push(hasPurpose
+      ? '已有分组（带 purpose 的为常驻工作区，请优先把语义命中其 purpose 的标签用同名 name 并入；其余标签命中同名分组也并入，否则新建）：'
+      : '已有分组（若标签明显属于其中某个，请复用同名 name 以并入；否则新建）：');
     lines.push(JSON.stringify(
-      existingGroups.map(g => ({ name: g.name, domains: g.domains || [] })),
+      existingGroups.map(g => {
+        const item = { name: g.name, domains: g.domains || [] };
+        if (g.description && g.description.trim()) item.purpose = g.description.trim();
+        return item;
+      }),
       null,
       2,
     ));
@@ -190,15 +198,14 @@ export async function analyzeTabs(tabs, config, existingGroups = []) {
   const systemPrompt = (cfg.prompt && cfg.prompt.trim()) ? cfg.prompt : DEFAULT_ORGANIZE_PROMPT;
   const endpoint = `${normalizeBaseUrl(cfg.baseUrl)}/chat/completions`;
   const body = {
+    // 不发 temperature：部分模型（如 claude-opus-4-8）已废弃该参数，带上会 400。
     model: cfg.model,
-    temperature: 0.2,
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: buildUserPrompt(tabs, existingGroups) },
     ],
     response_format: { type: 'json_object' },
   };
-    // 不发 temperature：部分模型（如 claude-opus-4-8）已废弃该参数，带上会 400。
 
   let resp;
   try {

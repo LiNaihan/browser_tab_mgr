@@ -4,17 +4,22 @@
 
 import {
   captureSession,
+  captureArchivedTab,
   resolveWindowNames,
   updateRegistry,
 } from '../lib/session-utils.js';
 import {
   analyzeTabs,
-  DEFAULT_LLM_CONFIG,
   summarizeGroups,
   fetchModels,
+  DEFAULT_LLM_CONFIG,
   DEFAULT_ORGANIZE_PROMPT,
   VALID_GROUP_COLORS,
 } from '../lib/llm.js';
+
+// 陈旧标签阈值：lastAccessed 超过该天数视为陈旧（4C）
+const STALE_DAYS = 7;
+const STALE_MS = STALE_DAYS * 24 * 60 * 60 * 1000;
 
 // State
 let allTabs = [];
@@ -33,6 +38,8 @@ let selectedTabIds = new Set(); // 多选的标签 ID
 let lastSelectedTabId = null;  // 上次选中的标签（用于 Shift 范围选择）
 let currentWindowId = null; // 当前 sidepanel 所在的窗口 ID
 let archivedWindows = []; // 归档的窗口列表
+let pinnedGroups = {}; // 常驻工作区分组：pid -> { pid, name, color, description, domainFingerprint, archivedTabs, createdAt, updatedAt }
+let archivedSearchMatches = []; // 搜索时命中的归档标签：[{ pid, groupName, tab }]，仅在有搜索词时填充
 
 // DOM Elements
 const elements = {
@@ -432,14 +439,15 @@ async function loadWindowNames() {
       'windowOrder',
       'collapsedWindows',
       'collapsedGroups',
-      'archivedWindows'
+      'archivedWindows',
+      'pinnedGroups'
     ]);
     windowNames = result.windowNames || {};
     windowOrder = result.windowOrder || [];
     collapsedWindows = new Set(result.collapsedWindows || []);
     collapsedGroups = new Set(result.collapsedGroups || []);
     archivedWindows = result.archivedWindows || [];
-    collapsedGroups = new Set(result.collapsedGroups || []);
+    pinnedGroups = result.pinnedGroups || {};
   } catch (error) {
     console.error('Failed to load window names:', error);
     windowNames = {};
@@ -459,6 +467,66 @@ async function saveCollapsedState() {
   } catch (error) {
     console.error('Failed to save collapsed state:', error);
   }
+}
+
+// 保存常驻工作区分组（镜像 collapsedGroups 的持久化方式）
+async function savePinnedGroups() {
+  try {
+    await chrome.storage.local.set({ pinnedGroups });
+  } catch (error) {
+    console.error('Failed to save pinned groups:', error);
+  }
+}
+
+// ============ 常驻工作区分组（pinned groups）============
+
+// 取分组内的去重域名集合（重匹配指纹用）
+function getGroupDomains(tabsOrTabList) {
+  return [...new Set(
+    tabsOrTabList.map(t => domainOf(t.url)).filter(Boolean)
+  )];
+}
+
+// 两个域名集合的重叠度（Jaccard 交并比）
+function domainOverlap(a, b) {
+  const setA = new Set(a);
+  const setB = new Set(b);
+  if (setA.size === 0 && setB.size === 0) return 1;
+  let inter = 0;
+  for (const d of setA) if (setB.has(d)) inter++;
+  const union = setA.size + setB.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
+// 把活分组（重启后 id 会变）重匹配到持久化的 pinnedGroup：
+// 组名完全一致，且（名字唯一命中 或 域名集合 Jaccard 重叠 >= 阈值）。返回 pid 或 null。
+const PINNED_MATCH_THRESHOLD = 0.3;
+function matchPinnedGroup(liveGroup, liveGroupDomains) {
+  const liveName = (liveGroup?.title || '').trim();
+  if (!liveName) return null;
+  const liveNameLower = liveName.toLowerCase();
+
+  // 先按组名完全一致（忽略大小写）筛候选；只认仍在常驻（pinned!==false）的记录，
+  // unpin 后的软保留记录（pinned:false，仍留着 archivedTabs）不参与重贴。
+  const candidates = Object.values(pinnedGroups)
+    .filter(p => p.pinned !== false && (p.name || '').trim().toLowerCase() === liveNameLower);
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) {
+    // 名字唯一命中：直接接受（域名集合可能已随使用漂移）
+    return candidates[0].pid;
+  }
+
+  // 同名多个候选：用域名指纹重叠度择优
+  let best = null;
+  let bestScore = -1;
+  for (const p of candidates) {
+    const score = domainOverlap(liveGroupDomains, p.domainFingerprint || []);
+    if (score > bestScore) {
+      bestScore = score;
+      best = p;
+    }
+  }
+  return (best && bestScore >= PINNED_MATCH_THRESHOLD) ? best.pid : null;
 }
 
 async function saveWindowOrder(order) {
@@ -548,18 +616,21 @@ function renderTabList() {
     `;
     return;
   }
-  
+
   // 按窗口分组
   const tabsByWindow = groupTabsByWindow(filteredTabs);
-  
+
   // 按保存的顺序排序窗口
   const sortedWindows = sortWindowsByOrder(tabsByWindow);
-  
+
   let html = '';
   for (const [windowId, windowTabs] of sortedWindows) {
     html += renderWindowSection(windowId, windowTabs);
   }
-  
+
+  // 搜索命中的归档标签放在列表底部，灰显并标注 Archived
+  html += renderArchivedMatches(archivedSearchMatches);
+
   elements.tabList.innerHTML = html;
   
   // 恢复滚动位置
@@ -631,15 +702,33 @@ function renderTabGroup(group) {
   const title = groupInfo?.title || 'Unnamed Group';
   const isCollapsed = collapsedGroups.has(group.id);
 
-  // 搜索命中的归档标签放在列表底部，灰显并标注 Archived
-  html += renderArchivedMatches(archivedSearchMatches);
+  // 常驻工作区绑定：按组名 + 域名指纹把持久数据重匹配到活分组
+  const groupDomains = getGroupDomains(group.tabs);
+  const liveGroup = { title, color };
+  const pid = matchPinnedGroup(liveGroup, groupDomains);
+  if (pid && pinnedGroups[pid]) {
+    // 机会性刷新活绑定（名字/颜色/指纹），不阻塞渲染
+    const rec = pinnedGroups[pid];
+    if (rec.name !== title || rec.color !== color ||
+        JSON.stringify(rec.domainFingerprint || []) !== JSON.stringify(groupDomains)) {
+      rec.name = title;
+      rec.color = color;
+      rec.domainFingerprint = groupDomains;
+      rec.updatedAt = Date.now();
+      savePinnedGroups();
+    }
+  }
+  const pinnedClass = pid ? ' pinned' : '';
+  const pinnedAttr = pid ? ` data-pinned="${escapeHtml(pid)}"` : '';
+  const pinnedBadge = pid ? `<span class="group-pin-badge" title="Pinned workspace">📌</span>` : '';
 
   let html = `
-    <div class="tab-group${isCollapsed ? ' collapsed' : ''}" data-group-id="${group.id}" data-color="${color}">
+    <div class="tab-group${isCollapsed ? ' collapsed' : ''}${pinnedClass}" data-group-id="${group.id}" data-color="${color}"${pinnedAttr}>
       <div class="group-header">
         <svg class="collapse-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
           <path d="M4 6l4 4 4-4"/>
         </svg>
+        ${pinnedBadge}
         <span class="group-title">${escapeHtml(title)}</span>
         <span class="group-count">${group.tabs.length}</span>
       </div>
@@ -746,12 +835,99 @@ function updateDuplicatesButton() {
 
 function filterTabs(tabs, query) {
   if (!query) return tabs;
-  
+
   const lowerQuery = query.toLowerCase();
-  return tabs.filter(tab => 
+  return tabs.filter(tab =>
     tab.title?.toLowerCase().includes(lowerQuery) ||
     tab.url?.toLowerCase().includes(lowerQuery)
   );
+}
+
+// 遍历所有常驻工作区，收集 title/url 命中搜索词的归档标签（大小写不敏感）
+function collectArchivedMatches(query) {
+  const lowerQuery = query.toLowerCase();
+  const matches = [];
+  for (const pid of Object.keys(pinnedGroups)) {
+    const rec = pinnedGroups[pid];
+    if (!rec || !Array.isArray(rec.archivedTabs)) continue;
+    for (const tab of rec.archivedTabs) {
+      const hit = tab.title?.toLowerCase().includes(lowerQuery) ||
+        tab.url?.toLowerCase().includes(lowerQuery);
+      if (hit) {
+        matches.push({ pid, groupName: rec.name || 'Group', tab });
+      }
+    }
+  }
+  return matches;
+}
+
+// 渲染搜索命中的归档标签（灰显 + Archived 标记）；data-arch-index 指向 archivedSearchMatches
+function renderArchivedMatches(matches) {
+  if (!matches || matches.length === 0) return '';
+
+  let items = '';
+  matches.forEach((m, i) => {
+    const t = m.tab;
+    const favicon = t.favIconUrl
+      ? `<img class="tab-favicon" src="${escapeHtml(t.favIconUrl)}" alt="">`
+      : `<div class="tab-favicon placeholder">🌐</div>`;
+    items += `
+      <div class="tab-item archived-search-item" data-arch-index="${i}" title="Click to restore into ${escapeHtml(m.groupName)}">
+        ${favicon}
+        <span class="tab-title">${escapeHtml(t.title || t.url || 'Archived Tab')}</span>
+        <span class="archived-badge">Archived · ${escapeHtml(m.groupName)}</span>
+      </div>
+    `;
+  });
+
+  return `
+    <div class="archived-search-section">
+      <div class="archived-search-header">🗄 Archived matches (${matches.length})</div>
+      ${items}
+    </div>
+  `;
+}
+
+// 恢复一条搜索命中的归档标签：优先并入对应活分组，找不到活分组则在当前窗口新建游离标签
+async function restoreArchivedSearchMatch(idx) {
+  const match = archivedSearchMatches[idx];
+  if (!match) return;
+  const { pid, tab } = match;
+  const rec = pinnedGroups[pid];
+  if (!rec || !Array.isArray(rec.archivedTabs)) return;
+
+  // 找当前会话里该 pid 对应的活分组元素
+  const groupEl = Array.from(document.querySelectorAll('.tab-group[data-pinned]'))
+    .find(el => el.dataset.pinned === pid);
+
+  let restored = false;
+  if (groupEl) {
+    const groupId = parseInt(groupEl.dataset.groupId);
+    const windowSection = groupEl.closest('.window-section');
+    const windowId = windowSection ? parseInt(windowSection.dataset.windowId) : undefined;
+    if (Number.isInteger(groupId) && Number.isInteger(windowId)) {
+      const created = await restoreTabInto(windowId, groupId, tab);
+      restored = !!created;
+    }
+  }
+
+  if (!restored) {
+    // 该分组本会话未打开：降级为在当前窗口新建游离标签，避免丢失 URL
+    const created = await createTabFromArchive({ windowId: currentWindowId, url: tab.url });
+    restored = !!created;
+    if (restored) showToast('分组未打开，已在当前窗口恢复为独立标签');
+  }
+
+  if (!restored) {
+    showToast('无法恢复该标签（可能是不支持的 URL）');
+    return;
+  }
+
+  // 从归档记录里移除该条并持久化
+  const pos = rec.archivedTabs.indexOf(tab);
+  if (pos !== -1) rec.archivedTabs.splice(pos, 1);
+  await savePinnedGroups();
+  await loadTabs();
 }
 
 function groupTabsByWindow(tabs) {
@@ -1013,14 +1189,22 @@ function handleWindowNameEdit(e) {
 function handleGroupNameEdit(e) {
   const groupTitle = e.target.closest('.group-title');
   if (!groupTitle) return;
-  
+  startGroupTitleEdit(groupTitle);
+  // 阻止双击事件继续冒泡
+  e.stopPropagation();
+}
+
+// 分组名内联编辑（供双击与右键菜单「Rename」复用）
+function startGroupTitleEdit(groupTitle) {
+  if (!groupTitle) return;
+
   const groupHeader = groupTitle.closest('.group-header');
   const tabGroup = groupHeader.closest('.tab-group');
   const groupId = parseInt(tabGroup.dataset.groupId);
-  
+
   // 已经在编辑中
   if (groupTitle.querySelector('input')) return;
-  
+
   const currentName = groupTitle.textContent || '';
   
   // 创建输入框
@@ -1063,12 +1247,74 @@ function handleGroupNameEdit(e) {
   
   // 失焦保存
   input.addEventListener('blur', saveName);
-  
-  // 阻止双击事件继续冒泡
-  e.stopPropagation();
+}
+
+// 常驻工作区描述编辑器（居中小弹窗）。resolve 保存后的字符串；取消 resolve(null)。
+function showDescriptionEditor(groupName, initialValue = '') {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'context-menu-overlay';
+
+    const dialog = document.createElement('div');
+    dialog.className = 'pin-description-dialog';
+    dialog.innerHTML = `
+      <div class="pin-description-title">📌 ${escapeHtml(groupName)}</div>
+      <div class="pin-description-hint">Describe this workspace's purpose (helps AI route tabs here)</div>
+      <textarea class="pin-description-input" rows="3" placeholder="e.g. Audio 文档 / 论文阅读 / 前端调试"></textarea>
+      <div class="pin-description-actions">
+        <button class="pin-description-btn cancel">Cancel</button>
+        <button class="pin-description-btn save">Save</button>
+      </div>
+    `;
+
+    const textarea = dialog.querySelector('.pin-description-input');
+    textarea.value = initialValue;
+
+    let done = false;
+    const cleanup = () => {
+      document.removeEventListener('keydown', onKeyDown);
+      overlay.remove();
+      dialog.remove();
+    };
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(value);
+    };
+
+    function onKeyDown(e) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        finish(null);
+      } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        finish(textarea.value.trim());
+      }
+    }
+
+    overlay.addEventListener('click', () => finish(null));
+    dialog.querySelector('.cancel').addEventListener('click', () => finish(null));
+    dialog.querySelector('.save').addEventListener('click', () => finish(textarea.value.trim()));
+    document.addEventListener('keydown', onKeyDown);
+
+    document.body.appendChild(overlay);
+    document.body.appendChild(dialog);
+    textarea.focus();
+    textarea.select();
+  });
 }
 
 function handleTabListClick(e) {
+  // 搜索命中的归档标签：点击即恢复（需在通用 tab-item 处理之前拦截）
+  const archItem = e.target.closest('.archived-search-item');
+  if (archItem) {
+    e.stopPropagation();
+    const idx = parseInt(archItem.dataset.archIndex);
+    if (Number.isInteger(idx)) restoreArchivedSearchMatch(idx);
+    return;
+  }
+
   // 有选中状态 + 不按 Cmd/Shift = 清除选择（类似遮罩效果）
   if (selectedTabIds.size > 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
     // 但关闭按钮仍然生效
@@ -1308,15 +1554,6 @@ function setupWindowDragDelegation() {
     const tabItem = e.target.closest('.tab-item');
     const groupHeader = e.target.closest('.group-header');
     
-  // 搜索命中的归档标签：点击即恢复（需在通用 tab-item 处理之前拦截）
-  const archItem = e.target.closest('.archived-search-item');
-  if (archItem) {
-    e.stopPropagation();
-    const idx = parseInt(archItem.dataset.archIndex);
-    if (Number.isInteger(idx)) restoreArchivedSearchMatch(idx);
-    return;
-  }
-
     // 如果在 window-header 内，且不在 tab-item 或 group-header 内
     if (windowHeader && !tabItem && !groupHeader) {
       handleWindowDragStart(e);
@@ -1376,7 +1613,13 @@ function handleGroupDragEnd(e) {
 function handleDragOver(e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
-  
+
+  // 拖拽窗口时：整个窗口区域都作为排序落点（不仅是标题栏）
+  if (draggedWindow) {
+    handleWindowDragOver(e);
+    return;
+  }
+
   // 清除之前的高亮
   document.querySelectorAll('.drag-over, .window-drop-target, .group-drop-target').forEach(el => {
     el.classList.remove('drag-over', 'window-drop-target', 'group-drop-target');
@@ -1423,7 +1666,13 @@ function handleDragLeave(e) {
 
 async function handleDrop(e) {
   e.preventDefault();
-  
+
+  // 拖拽窗口时：在窗口区域任意位置松手都触发窗口排序
+  if (draggedWindow) {
+    await handleWindowDrop(e);
+    return;
+  }
+
   if (!draggedTab && !draggedGroup) return;
   
   const targetTabItem = e.target.closest('.tab-item');
@@ -1532,7 +1781,7 @@ function handleWindowDragEnd(e) {
 
 function handleWindowDragOver(e) {
   if (!draggedWindow) return;
-  
+
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
 
@@ -1545,7 +1794,7 @@ function handleWindowDragOver(e) {
       section.classList.add('window-drag-over');
     }
   }
-  
+
   e.stopPropagation();
 }
 
@@ -1563,11 +1812,12 @@ async function handleWindowDrop(e) {
   
   e.preventDefault();
   e.stopPropagation();
-  
-  const header = e.target.closest('.window-header');
-  if (!header) return;
-  
-  const targetWindowId = parseInt(header.dataset.windowId);
+
+  // 以整个 window-section 作为落点（窗口展开时也能在正文区域松手）
+  const section = e.target.closest('.window-section');
+  if (!section) return;
+
+  const targetWindowId = parseInt(section.dataset.windowId);
   if (targetWindowId === draggedWindow) return;
   
   // 获取当前窗口顺序
@@ -1620,13 +1870,7 @@ function showWindowContextMenu(x, y, windowId) {
   
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
   menu.style.top = `${Math.min(y, window.innerHeight - 120)}px`;
-
-  // 拖拽窗口时：整个窗口区域都作为排序落点（不仅是标题栏）
-  if (draggedWindow) {
-    handleWindowDragOver(e);
-    return;
-  }
-
+  
   menu.addEventListener('click', async (e) => {
     const item = e.target.closest('.context-menu-item');
     if (!item) return;
@@ -1717,13 +1961,7 @@ function showWindowContextMenu(x, y, windowId) {
     
     hideContextMenu();
   });
-
-  // 拖拽窗口时：在窗口区域任意位置松手都触发窗口排序
-  if (draggedWindow) {
-    await handleWindowDrop(e);
-    return;
-  }
-
+  
   // 遮罩层
   const overlay = document.createElement('div');
   overlay.className = 'context-menu-overlay';
@@ -1748,14 +1986,44 @@ function showGroupContextMenu(x, y, groupId, windowId) {
   const tabCount = groupTabs.length;
   const groupName = group?.title || 'Group';
   const tabIds = groupTabs.map(t => t.id);
-  
+
+  // 常驻工作区绑定：从已渲染的 DOM 读回 pid（renderTabGroup 已算好）
+  const groupEl = document.querySelector(`.tab-group[data-group-id="${groupId}"]`);
+  const pinnedPid = groupEl?.dataset.pinned || null;
+  const isPinned = !!(pinnedPid && pinnedGroups[pinnedPid]);
+
   const menu = document.createElement('div');
   menu.className = 'context-menu';
-  
+
+  // 颜色色板（Chrome tabGroups 支持的 9 种颜色）
+  const currentColor = group?.color || 'grey';
+  const colorSwatches = VALID_GROUP_COLORS.map(c => `
+    <span class="group-color-swatch${c === currentColor ? ' selected' : ''}" data-color="${c}" title="${c}"></span>
+  `).join('');
+
+  const pinnedMenuItems = isPinned
+    ? `
+    <div class="context-menu-item" data-action="edit-description">✏️ Edit description</div>
+    <div class="context-menu-item" data-action="unpin">📌 Unpin workspace</div>`
+    : `
+    <div class="context-menu-item" data-action="pin">📌 Pin as workspace</div>`;
+
+  // 常驻组已归档 tab：有则给一个悬停展开的入口
+  const archivedTabs = isPinned ? (pinnedGroups[pinnedPid].archivedTabs || []) : [];
+  const archivedMenuItem = (isPinned && archivedTabs.length > 0)
+    ? `<div class="context-menu-item has-submenu" data-action="archived">🗄 Archived (${archivedTabs.length}) ▶</div>`
+    : '';
+
   const menuHtml = `
     <div class="context-menu-header">${escapeHtml(groupName)} (${tabCount} tabs)</div>
     <div class="context-menu-separator"></div>
     <div class="context-menu-item" data-action="new-tab">➕ New Tab</div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item" data-action="rename">✏️ Rename</div>
+    ${pinnedMenuItems}
+    ${archivedMenuItem}
+    <div class="context-menu-color-label">Color</div>
+    <div class="group-color-picker">${colorSwatches}</div>
     <div class="context-menu-separator"></div>
     <div class="context-menu-item" data-action="discard-group">💤 Discard All Tabs</div>
     <div class="context-menu-item" data-action="ungroup">📂 Ungroup</div>
@@ -1763,18 +2031,31 @@ function showGroupContextMenu(x, y, groupId, windowId) {
     <div class="context-menu-separator"></div>
     <div class="context-menu-item danger" data-action="close-group">🗑️ Close Group</div>
   `;
-  
+
   menu.innerHTML = menuHtml;
   
   menu.style.left = `${Math.min(x, window.innerWidth - 180)}px`;
   menu.style.top = `${Math.min(y, window.innerHeight - 200)}px`;
-
+  
   menu.addEventListener('click', async (e) => {
+    // 点击色板 -> 修改分组颜色
+    const swatch = e.target.closest('.group-color-swatch');
+    if (swatch) {
+      const color = swatch.dataset.color;
+      try {
+        await chrome.tabGroups.update(groupId, { color });
+      } catch (err) {
+        console.error('Failed to update group color:', err);
+      }
+      hideContextMenu();
+      return;
+    }
+
     const item = e.target.closest('.context-menu-item');
     if (!item) return;
-    
+
     const action = item.dataset.action;
-    
+
     switch (action) {
       case 'new-tab':
         // 在该分组内创建新标签
@@ -1782,6 +2063,75 @@ function showGroupContextMenu(x, y, groupId, windowId) {
         await chrome.tabs.group({ tabIds: [newTab.id], groupId });
         hideContextMenu();
         break;
+      case 'rename': {
+        // 触发分组标题内联编辑
+        hideContextMenu();
+        const groupTitle = document.querySelector(`.tab-group[data-group-id="${groupId}"] .group-title`);
+        if (groupTitle) startGroupTitleEdit(groupTitle);
+        break;
+      }
+      case 'pin': {
+        // 常驻该分组：不弹填写框，description 默认空（留待 AI 整理时自动总结）。
+        // 优先复活同名+域名的软保留旧记录（保留其 archivedTabs 与 description/手动标记），否则新建。
+        hideContextMenu();
+        const now = Date.now();
+        const groupDomains = getGroupDomains(groupTabs);
+        // 找一条 unpin 软保留的旧记录：同名（忽略大小写），同名多个时按域名重叠择优
+        const dormant = Object.values(pinnedGroups)
+          .filter(p => p.pinned === false &&
+            (p.name || '').trim().toLowerCase() === (groupName || '').trim().toLowerCase())
+          .sort((a, b) => domainOverlap(groupDomains, b.domainFingerprint || []) -
+                          domainOverlap(groupDomains, a.domainFingerprint || []))[0] || null;
+        if (dormant) {
+          // 复活：恢复常驻状态，保留 archivedTabs / description / descriptionManual
+          dormant.pinned = true;
+          dormant.name = groupName;
+          dormant.color = group?.color || 'grey';
+          dormant.domainFingerprint = groupDomains;
+          dormant.updatedAt = now;
+        } else {
+          const pid = crypto.randomUUID();
+          pinnedGroups[pid] = {
+            pid,
+            pinned: true,
+            name: groupName,
+            color: group?.color || 'grey',
+            description: '',            // 默认空，AI 整理时自动总结
+            descriptionManual: false,   // 用户是否手动改过；true 后不再自动覆盖
+            domainFingerprint: groupDomains,
+            archivedTabs: [],
+            createdAt: now,
+            updatedAt: now,
+          };
+        }
+        await savePinnedGroups();
+        renderTabList();
+        break;
+      }
+      case 'unpin': {
+        // 取消常驻 = 软标记（pinned:false），保留记录与 archivedTabs，不动任何 tab
+        hideContextMenu();
+        if (pinnedPid && pinnedGroups[pinnedPid]) {
+          pinnedGroups[pinnedPid].pinned = false;
+          pinnedGroups[pinnedPid].updatedAt = Date.now();
+          await savePinnedGroups();
+          renderTabList();
+        }
+        break;
+      }
+      case 'edit-description': {
+        hideContextMenu();
+        if (!(pinnedPid && pinnedGroups[pinnedPid])) break;
+        const rec = pinnedGroups[pinnedPid];
+        const description = await showDescriptionEditor(rec.name || groupName, rec.description || '');
+        if (description === null) break; // 取消
+        rec.description = description;
+        rec.descriptionManual = true; // 手动改过：AI 整理不再自动覆盖
+        rec.updatedAt = Date.now();
+        await savePinnedGroups();
+        renderTabList();
+        break;
+      }
       case 'discard-group':
         // Discard 组内所有标签（包括 active）
         hideContextMenu();
@@ -1836,7 +2186,7 @@ function showGroupContextMenu(x, y, groupId, windowId) {
         break;
     }
   });
-
+  
   // 为 "Move to..." 添加悬停事件
   const moveToItem = menu.querySelector('[data-action="move-to"]');
   if (moveToItem) {
@@ -1844,9 +2194,17 @@ function showGroupContextMenu(x, y, groupId, windowId) {
       showGroupMoveToSubmenu(moveToItem, tabIds, group, windowId);
     });
   }
-  
-  // 悬停在其他项时关闭子菜单
-  menu.querySelectorAll('.context-menu-item:not([data-action="move-to"])').forEach(item => {
+
+  // 为 "Archived" 添加悬停事件（展开已归档 tab 列表）
+  const archivedItem = menu.querySelector('[data-action="archived"]');
+  if (archivedItem) {
+    archivedItem.addEventListener('mouseenter', () => {
+      showGroupArchivedSubmenu(archivedItem, pinnedPid, groupId, windowId);
+    });
+  }
+
+  // 悬停在其他项时关闭子菜单（Move to.../Archived 自己不触发关闭）
+  menu.querySelectorAll('.context-menu-item:not([data-action="move-to"]):not([data-action="archived"])').forEach(item => {
     item.addEventListener('mouseenter', () => {
       document.querySelectorAll('.context-submenu').forEach(m => m.remove());
     });
@@ -1977,7 +2335,92 @@ function showGroupMoveToSubmenu(parentItem, tabIds, sourceGroup, currentWindowId
   submenu.addEventListener('mouseenter', () => {
     clearTimeout(leaveTimeout);
   });
-  
+
+  document.body.appendChild(submenu);
+}
+
+// 常驻 Group 的 "Archived" 子菜单：列出已归档 tab，点击恢复 / ✕ 丢弃
+function showGroupArchivedSubmenu(parentItem, pid, groupId, windowId) {
+  document.querySelectorAll('.context-submenu').forEach(m => m.remove());
+
+  const rec = pinnedGroups[pid];
+  if (!rec) return;
+  const archived = rec.archivedTabs || [];
+
+  const submenu = document.createElement('div');
+  submenu.className = 'context-menu context-submenu';
+
+  let html = '';
+  if (archived.length === 0) {
+    html = '<div class="context-menu-item context-menu-empty">No archived tabs</div>';
+  } else {
+    archived.forEach((at, idx) => {
+      const favicon = at.favIconUrl
+        ? `<img class="archived-tab-favicon" src="${escapeHtml(at.favIconUrl)}" alt="">`
+        : '<span class="archived-tab-favicon placeholder">🌐</span>';
+      const label = at.title || at.url || 'Untitled';
+      html += `
+        <div class="context-menu-item archived-tab-item" data-action="restore-archived" data-idx="${idx}" title="${escapeHtml(label)}">
+          ${favicon}
+          <span class="archived-tab-title">${escapeHtml(label)}</span>
+          <span class="archived-tab-discard" data-action="discard-archived" data-idx="${idx}" title="Discard without restoring">✕</span>
+        </div>`;
+    });
+  }
+  submenu.innerHTML = html;
+
+  // 定位（复用 Move to 子菜单的定位思路）
+  const parentRect = parentItem.getBoundingClientRect();
+  const menuWidth = 220;
+  if (parentRect.right + menuWidth > window.innerWidth) {
+    submenu.style.left = `${Math.max(5, parentRect.left - menuWidth + 5)}px`;
+  } else {
+    submenu.style.left = `${parentRect.right - 5}px`;
+  }
+  submenu.style.top = `${Math.min(parentRect.top, window.innerHeight - 300)}px`;
+
+  submenu.addEventListener('click', async (e) => {
+    // ✕ 丢弃：不恢复，仅从 archivedTabs 移除
+    const discard = e.target.closest('[data-action="discard-archived"]');
+    if (discard) {
+      e.stopPropagation();
+      const idx = parseInt(discard.dataset.idx);
+      if (Array.isArray(rec.archivedTabs) && idx >= 0 && idx < rec.archivedTabs.length) {
+        rec.archivedTabs.splice(idx, 1);
+        rec.updatedAt = Date.now();
+        await savePinnedGroups();
+      }
+      hideContextMenu();
+      renderTabList();
+      return;
+    }
+
+    // 点击行：恢复该 tab 回本组，并从 archivedTabs 移除
+    const item = e.target.closest('[data-action="restore-archived"]');
+    if (!item) return;
+    const idx = parseInt(item.dataset.idx);
+    const at = rec.archivedTabs?.[idx];
+    if (!at) return;
+    hideContextMenu();
+    await restoreTabInto(windowId, groupId, at);
+    rec.archivedTabs.splice(idx, 1);
+    rec.updatedAt = Date.now();
+    await savePinnedGroups();
+    renderTabList();
+  });
+
+  // 鼠标离开逻辑（悬停回父项则保留）
+  let leaveTimeout;
+  submenu.addEventListener('mouseleave', () => {
+    leaveTimeout = setTimeout(() => {
+      if (parentItem.matches(':hover')) return;
+      submenu.remove();
+    }, 100);
+  });
+  submenu.addEventListener('mouseenter', () => {
+    clearTimeout(leaveTimeout);
+  });
+
   document.body.appendChild(submenu);
 }
 
@@ -1989,7 +2432,14 @@ function showContextMenu(x, y, tab) {
   const isMultiSelect = selectedTabIds.size > 1;
   const selectedCount = selectedTabIds.size;
   const isInGroup = tab.groupId && tab.groupId !== -1;
-  
+
+  // 该 tab 所在分组是否常驻（从已渲染 DOM 读回 pid，renderTabGroup 已算好）。
+  // 常驻组内额外提供 Archive（追加项，不替换默认关闭行为）。
+  const pinnedPid = isInGroup
+    ? (document.querySelector(`.tab-group[data-group-id="${tab.groupId}"]`)?.dataset.pinned || null)
+    : null;
+  const canArchive = !isMultiSelect && !!(pinnedPid && pinnedGroups[pinnedPid]);
+
   const menu = document.createElement('div');
   menu.className = 'context-menu';
   
@@ -2014,6 +2464,7 @@ function showContextMenu(x, y, tab) {
       <div class="context-menu-separator"></div>
       <div class="context-menu-item has-submenu" data-action="move-to">📦 Move to... ▶</div>
       ${isInGroup ? '<div class="context-menu-item" data-action="remove-from-group">📤 Remove from Group</div>' : ''}
+      ${canArchive ? '<div class="context-menu-item" data-action="archive-tab">🗄 Archive tab</div>' : ''}
       <div class="context-menu-separator"></div>
       <div class="context-menu-item" data-action="close-others">Close other tabs</div>
       <div class="context-menu-item danger" data-action="close">✕ Close tab</div>
@@ -2073,8 +2524,25 @@ function showContextMenu(x, y, tab) {
       case 'remove-from-group':
         await chrome.tabs.ungroup([tab.id]);
         break;
+
+      // 常驻组内 Archive：捕获快照进 pinnedGroups 后再关 tab（不改默认关闭按钮行为）
+      case 'archive-tab': {
+        if (pinnedPid && pinnedGroups[pinnedPid]) {
+          const rec = pinnedGroups[pinnedPid];
+          if (!Array.isArray(rec.archivedTabs)) rec.archivedTabs = [];
+          rec.archivedTabs.push(captureArchivedTab(tab));
+          rec.updatedAt = Date.now();
+          await savePinnedGroups();
+          try {
+            await chrome.tabs.remove(tab.id);
+          } catch (err) {
+            console.error('Failed to close archived tab:', err);
+          }
+        }
+        break;
+      }
     }
-    
+
     selectedTabIds.clear();
     hideContextMenu();
   });
@@ -2599,49 +3067,72 @@ async function archiveWindow(windowId) {
   }
 }
 
+// 从归档数据重建单个 tab（整窗恢复与常驻组 per-tab 恢复共用同一实现）。
+// 跳过 chrome:// 等不可重建的 URL，返回新建的 tab（跳过时返回 null）。
+async function createTabFromArchive({ windowId, url, pinned = false, active }) {
+  if (!url || url.startsWith('chrome://')) return null;
+  const props = { windowId, url };
+  if (pinned) props.pinned = true;
+  if (active !== undefined) props.active = active;
+  try {
+    return await chrome.tabs.create(props);
+  } catch (err) {
+    console.error('Failed to create tab from archive:', err);
+    return null;
+  }
+}
+
+// 把一条归档 tab 恢复进指定的活分组：重建 tab 后 group 并入 groupId。
+async function restoreTabInto(windowId, groupId, archTab) {
+  const tab = await createTabFromArchive({ windowId, url: archTab.url });
+  if (!tab) return null;
+  try {
+    await chrome.tabs.group({ tabIds: [tab.id], groupId });
+  } catch (err) {
+    console.error('Failed to group restored tab:', err);
+  }
+  return tab;
+}
+
 async function restoreArchivedWindow(archiveId) {
   const archive = archivedWindows.find(a => a.id === archiveId);
   if (!archive) {
     alert('Archive not found');
     return;
   }
-  
+
   // 创建新窗口
   const newWindow = await chrome.windows.create({});
-  
+
   // 保存窗口名称
   windowNames[newWindow.id] = archive.name;
   await chrome.storage.local.set({ windowNames });
-  
+
   // 关闭默认创建的空白标签
   const defaultTab = (await chrome.tabs.query({ windowId: newWindow.id }))[0];
-  
+
   // 先创建未分组的标签
   for (const tabData of archive.tabs) {
-    if (tabData.url && !tabData.url.startsWith('chrome://')) {
-      await chrome.tabs.create({
+    await createTabFromArchive({
+      windowId: newWindow.id,
+      url: tabData.url,
+      pinned: tabData.pinned,
+    });
+  }
+
+  // 创建分组和分组内的标签
+  for (const groupData of archive.groups) {
+    const tabIds = [];
+
+    for (const tabData of groupData.tabs) {
+      const tab = await createTabFromArchive({
         windowId: newWindow.id,
         url: tabData.url,
         pinned: tabData.pinned,
       });
+      if (tab) tabIds.push(tab.id);
     }
-  }
-  
-  // 创建分组和分组内的标签
-  for (const groupData of archive.groups) {
-    const tabIds = [];
-    
-    for (const tabData of groupData.tabs) {
-      if (tabData.url && !tabData.url.startsWith('chrome://')) {
-        const tab = await chrome.tabs.create({
-          windowId: newWindow.id,
-          url: tabData.url,
-          pinned: tabData.pinned,
-        });
-        tabIds.push(tab.id);
-      }
-    }
-    
+
     if (tabIds.length > 0) {
       const groupId = await chrome.tabs.group({ tabIds, createProperties: { windowId: newWindow.id } });
       await chrome.tabGroups.update(groupId, {
@@ -2844,10 +3335,15 @@ async function exportSession() {
 
   // 导出包含 session、archived windows 和保留的 checkpoints
   const checkpoints = await loadCheckpoints();
+  // 窗口名 + 指纹→名字注册表：让备份能真正救回窗口名（注册表按内容指纹，跨扩展 ID/窗口 ID 有效）
+  const nameStore = await chrome.storage.local.get(['windowNames', 'windowNameRegistry']);
   const exportData = {
     session: session,
     archivedWindows: archivedWindows,
     sessionCheckpoints: checkpoints,
+    pinnedGroups: pinnedGroups,
+    windowNames: nameStore.windowNames || {},
+    windowNameRegistry: nameStore.windowNameRegistry || {},
     exportedAt: new Date().toISOString()
   };
 
@@ -2882,12 +3378,14 @@ async function importSession() {
       let session;
       let importedArchives = [];
       let importedCheckpoints = [];
-      
+      let importedPinnedGroups = {};
+
       if (data.session) {
         // 新格式：包含 session 和 archivedWindows
         session = data.session;
         importedArchives = data.archivedWindows || [];
         importedCheckpoints = data.sessionCheckpoints || [];
+        importedPinnedGroups = data.pinnedGroups || {};
       } else if (data.windows) {
         // 旧格式：直接是 session
         session = data;
@@ -2915,7 +3413,37 @@ async function importSession() {
         const merged = [...importedCheckpoints, ...existing].slice(0, 12);
         await chrome.storage.local.set({ sessionCheckpoints: merged });
       }
-      
+
+      // 导入常驻工作区分组（含 archivedTabs）：按 pid 合并，不覆盖已有本地记录
+      // （安全选择：仅补入本地缺失的 pid，避免覆盖掉本地组的 archivedTabs 等数据）
+      const importedPids = Object.keys(importedPinnedGroups);
+      if (importedPids.length > 0) {
+        let added = 0;
+        for (const pid of importedPids) {
+          if (!pinnedGroups[pid]) {
+            pinnedGroups[pid] = importedPinnedGroups[pid];
+            added++;
+          }
+        }
+        if (added > 0) await savePinnedGroups();
+      }
+
+      // 导入窗口名注册表（指纹→名字）：合并进本地，让窗口按内容指纹自动恢复名字。
+      // 注册表是跨扩展 ID/窗口 ID 都有效的持久载体，比 windowNames（按活 windowId）更可靠。
+      if (data.windowNameRegistry && typeof data.windowNameRegistry === 'object') {
+        const cur = (await chrome.storage.local.get('windowNameRegistry')).windowNameRegistry || {};
+        for (const [fp, rec] of Object.entries(data.windowNameRegistry)) {
+          // 冲突时保留更新时间较新的
+          if (!cur[fp] || (rec?.ts || 0) > (cur[fp]?.ts || 0)) cur[fp] = rec;
+        }
+        await chrome.storage.local.set({ windowNameRegistry: cur });
+      }
+      // windowNames（按 windowId）也合并一份，兜底当前窗口 id 恰好一致的情况
+      if (data.windowNames && typeof data.windowNames === 'object') {
+        windowNames = { ...data.windowNames, ...windowNames };
+        await chrome.storage.local.set({ windowNames });
+      }
+
       showToast(`Imported: ${session.windows.length} windows + ${importedArchives.length} archives`);
       showSessionsPanel(); // 刷新
     } catch (err) {
@@ -3254,6 +3782,56 @@ function hideDuplicatesPanel() {
 // 范围：所有窗口的未固定标签（Tab Group 不能跨窗口，应用时按各自窗口分别建组）。
 // 流程：收集标签 → 调用 LLM → 预览方案 → 用户确认后才创建分组。
 
+// 4B：为 description 为空且非手动的常驻组，依据组内 tab 自动生成简短工作内容摘要并写回。
+// 独立于整理主流程：任何失败都只是不填描述，绝不影响后续整理。返回 name(lower)->text 便于调试。
+async function autoSummarizePinnedGroups(config) {
+  try {
+    const groups = await chrome.tabGroups.query({});
+    const pending = [];
+    for (const g of groups) {
+      if (!(g.title && g.title.trim())) continue;
+      const groupTabs = allTabs.filter(t => t.groupId === g.id);
+      if (groupTabs.length === 0) continue;
+      const pid = matchPinnedGroup(g, getGroupDomains(groupTabs));
+      if (!pid || !pinnedGroups[pid]) continue;
+      const rec = pinnedGroups[pid];
+      // 只处理仍常驻、描述为空、且非手动填写的组
+      if (rec.pinned === false) continue;
+      if ((rec.description || '').trim()) continue;
+      if (rec.descriptionManual === true) continue;
+      pending.push({
+        pid,
+        name: g.title,
+        tabs: groupTabs.slice(0, 12).map(t => ({ title: t.title || '', domain: domainOf(t.url) })),
+      });
+    }
+    if (!pending.length) return {};
+
+    const summaries = await summarizeGroups(
+      pending.map(p => ({ name: p.name, tabs: p.tabs })),
+      config,
+    );
+    const result = {};
+    let changed = false;
+    pending.forEach((p, i) => {
+      const text = (summaries[i] || '').trim();
+      if (!text) return;
+      const rec = pinnedGroups[p.pid];
+      if (!rec) return;
+      rec.description = text.slice(0, 60);
+      rec.updatedAt = Date.now();
+      // 自动生成：保持 descriptionManual 为 false，后续用户手动改才置 true
+      result[(p.name || '').trim().toLowerCase()] = rec.description;
+      changed = true;
+    });
+    if (changed) await savePinnedGroups();
+    return result;
+  } catch (err) {
+    console.error('Auto-summarize pinned groups failed:', err);
+    return {};
+  }
+}
+
 // scope: 'ungrouped' 只整理未分组标签 | 'all' 全部重新分组（含已分组）
 async function startOrganize(scope = 'ungrouped') {
   const config = await loadLlmConfig();
@@ -3276,13 +3854,30 @@ async function startOrganize(scope = 'ungrouped') {
     return;
   }
 
-  const meta = { count: candidates.length, pinnedSkipped, groupedSkipped, scope };
+  const meta = { count: candidates.length, pinnedSkipped, groupedSkipped, scope,
+    candidateIds: candidates.map(t => t.id) };
   showOrganizePanel({ loading: true, ...meta });
 
+  // 4C：检出陈旧标签（lastAccessed 超过阈值；无 lastAccessed 视为不陈旧）
+  const staleThreshold = Date.now() - STALE_MS;
+  const staleTabIds = candidates
+    .filter(t => typeof t.lastAccessed === 'number' && t.lastAccessed < staleThreshold)
+    .map(t => t.id);
+
   try {
+    // 4B：先对空描述的常驻组自动总结（写回 description），再取已有分组信息，
+    // 这样新生成的描述会一并喂给模型，直接惠及本次归位路由。
+    if (scope !== 'all') {
+      await autoSummarizePinnedGroups(config);
+    }
     // 仅未分组模式：把已有分组喂给模型，让它判断哪些标签应并入现有分组（复用同名）
     const existingGroups = scope === 'all' ? [] : await getExistingGroupsInfo();
     const existingNames = existingGroups.map(g => (g.name || '').trim().toLowerCase());
+    // 并入去向提示 + 陈旧归档目标：name(lower) -> 该已有常驻组的 pid
+    const pinnedMergePids = {};
+    for (const g of existingGroups) {
+      if (g.pinned && g.pid) pinnedMergePids[(g.name || '').trim().toLowerCase()] = g.pid;
+    }
     // 用 0 开始的小序号喂给模型，避免大整数 tab id 被抄错/误当示例
     const tabsForLlm = candidates.map((t, i) => ({ id: i, title: t.title, url: t.url }));
     const plan = await analyzeTabs(tabsForLlm, config, existingGroups);
@@ -3315,28 +3910,80 @@ async function startOrganize(scope = 'ungrouped') {
       showOrganizePanel({ empty: true, raw: plan.raw, ...meta });
       return;
     }
-    showOrganizePanel({ plan, existingNames, ...meta });
+    showOrganizePanel({ plan, existingNames, pinnedMergePids, staleTabIds, ...meta });
   } catch (err) {
     console.error('AI organize failed:', err);
     showOrganizePanel({ error: err.message || String(err) });
   }
 }
 
-// 渲染一个分组里的标签清单
-function renderOrganizeGroupTabs(tabIds) {
+// 渲染一个分组里的标签清单（每条带 per-tab 勾选；陈旧标签额外带处理动作）
+// opts: { staleSet:Set<tabId>, stalePinnedPid:string|null }
+//   stalePinnedPid 存在 → 该组会并入常驻组，陈旧标签给 Archive（归档到该 pid）；否则给 Close。
+function renderOrganizeGroupTabs(tabIds, opts = {}) {
+  const staleSet = opts.staleSet;
+  const stalePinnedPid = opts.stalePinnedPid || null;
   return tabIds.map(id => {
     const tab = allTabs.find(t => t.id === id);
     if (!tab) return '';
     const favicon = tab.favIconUrl
       ? `<img class="tab-favicon" src="${escapeHtml(tab.favIconUrl)}" alt="" style="width:14px;height:14px;flex-shrink:0">`
       : `<span style="flex-shrink:0;font-size:12px">🌐</span>`;
+    const isStale = !!(staleSet && staleSet.has(id));
+    let staleHtml = '';
+    if (isStale) {
+      if (stalePinnedPid) {
+        staleHtml = `
+          <label class="organize-stale" title="7 天以上未访问 · 勾选后归档到常驻组（可从右键菜单恢复）">
+            <span class="organize-stale-badge">⏰ 7d+</span>
+            <input type="checkbox" class="organize-stale-action" data-tab-id="${id}" data-stale-action="archive" data-archive-pid="${escapeHtml(stalePinnedPid)}">
+            <span class="organize-stale-label">Archive</span>
+          </label>`;
+      } else {
+        staleHtml = `
+          <label class="organize-stale" title="7 天以上未访问 · 勾选后关闭该标签">
+            <span class="organize-stale-badge">⏰ 7d+</span>
+            <input type="checkbox" class="organize-stale-action" data-tab-id="${id}" data-stale-action="close">
+            <span class="organize-stale-label">Close</span>
+          </label>`;
+      }
+    }
     return `
-      <div class="organize-tab">
+      <div class="organize-tab${isStale ? ' is-stale' : ''}">
+        <input type="checkbox" class="organize-tab-check" data-tab-id="${id}" checked>
         ${favicon}
         <span class="organize-tab-title" title="${escapeHtml(tab.title)}">${escapeHtml(tab.title || 'New Tab')}</span>
+        ${staleHtml}
       </div>
     `;
   }).join('');
+}
+
+// 渲染 preview 里的一个分组块（组级 checkbox 作为父级开关 + 并入去向提示 + 组内 per-tab）
+// opts: { merge, mergeTargetName, pinnedPid, loose, staleSet }
+function renderPlanGroupBlock(g, opts = {}) {
+  const { merge, mergeTargetName, pinnedPid, loose, staleSet } = opts;
+  const nameHtml = loose
+    ? `<span class="organize-group-name organize-subtle">未分组（单独移入）</span>`
+    : `${colorDot(g.color)}<span class="organize-group-name">${escapeHtml(g.name)}</span>`;
+  let badge = '';
+  if (merge) {
+    const target = mergeTargetName || g.name || '';
+    badge = pinnedPid
+      ? `<span class="organize-merge-badge pinned" title="将并入常驻工作区">📌 并入常驻「${escapeHtml(target)}」</span>`
+      : `<span class="organize-merge-badge" title="将并入已有分组">并入「${escapeHtml(target)}」</span>`;
+  }
+  return `
+    <div class="organize-group">
+      <label class="organize-group-header">
+        <input type="checkbox" class="organize-group-check" checked>
+        ${nameHtml}
+        ${badge}
+        <span class="organize-group-count">${g.tabIds.length}</span>
+      </label>
+      <div class="organize-group-tabs">${renderOrganizeGroupTabs(g.tabIds, { staleSet, stalePinnedPid: pinnedPid || null })}</div>
+    </div>
+  `;
 }
 
 function colorDot(color) {
@@ -3373,7 +4020,11 @@ function showOrganizePanel(state) {
                   <button class="btn-retry-organize">重试</button>`;
   } else if (state.plan && state.plan.mode === 'windows') {
     const existingNames = state.existingNames || [];
+    const pinnedMergePids = state.pinnedMergePids || {};
+    const staleSet = new Set(state.staleTabIds || []);
+    const staleCount = staleSet.size;
     const willMerge = g => existingNames.includes((g.name || '').trim().toLowerCase());
+    const pidForMerge = g => pinnedMergePids[(g.name || '').trim().toLowerCase()] || null;
     const windowsHtml = state.plan.windows.map((w, widx) => {
       const total = w.groups.reduce((acc, g) => acc + g.tabIds.length, 0);
       // 命中已有分组 → 并入；其余里 >=2 才建组，单 tab 作为散标签随窗口移入
@@ -3381,37 +4032,13 @@ function showOrganizePanel(state) {
       const rest = w.groups.filter(g => !willMerge(g));
       const realGroups = rest.filter(g => g.tabIds.length >= 2);
       const looseIds = rest.filter(g => g.tabIds.length < 2).flatMap(g => g.tabIds);
-      const mergeHtml = mergeGroups.map(g => `
-        <div class="organize-group">
-          <div class="organize-group-header static">
-            ${colorDot(g.color)}
-            <span class="organize-group-name">${escapeHtml(g.name)}</span>
-            <span class="organize-merge-badge">并入已有</span>
-            <span class="organize-group-count">${g.tabIds.length}</span>
-          </div>
-          <div class="organize-group-tabs">${renderOrganizeGroupTabs(g.tabIds)}</div>
-        </div>
-      `).join('');
-      const groupsHtml = mergeHtml + realGroups.map(g => `
-        <div class="organize-group">
-          <div class="organize-group-header static">
-            ${colorDot(g.color)}
-            <span class="organize-group-name">${escapeHtml(g.name)}</span>
-            <span class="organize-group-count">${g.tabIds.length}</span>
-          </div>
-          <div class="organize-group-tabs">${renderOrganizeGroupTabs(g.tabIds)}</div>
-        </div>
-      `).join('');
-
-      const looseHtml = looseIds.length ? `
-        <div class="organize-group">
-          <div class="organize-group-header static">
-            <span class="organize-group-name organize-subtle">未分组（单独移入）</span>
-            <span class="organize-group-count">${looseIds.length}</span>
-          </div>
-          <div class="organize-group-tabs">${renderOrganizeGroupTabs(looseIds)}</div>
-        </div>
-      ` : '';
+      const mergeHtml = mergeGroups.map(g => renderPlanGroupBlock(g, {
+        merge: true, mergeTargetName: g.name, pinnedPid: pidForMerge(g), staleSet,
+      })).join('');
+      const realHtml = realGroups.map(g => renderPlanGroupBlock(g, { staleSet })).join('');
+      const looseHtml = looseIds.length
+        ? renderPlanGroupBlock({ name: '', color: 'grey', tabIds: looseIds }, { loose: true, staleSet })
+        : '';
 
       return `
         <div class="organize-window" data-window-index="${widx}">
@@ -3420,13 +4047,17 @@ function showOrganizePanel(state) {
             <span class="organize-window-name">🪟 ${escapeHtml(w.name)}</span>
             <span class="organize-group-count">${total}</span>
           </label>
-          <div class="organize-window-groups">${groupsHtml}${looseHtml}</div>
+          <div class="organize-window-groups">${mergeHtml}${realHtml}${looseHtml}</div>
         </div>
       `;
     }).join('');
 
+    const staleNote = staleCount
+      ? `<div class="organize-stale-note">⏰ ${staleCount} 个标签 7 天以上未访问；勾选各自的 Archive/Close 才会处理（默认不动）。</div>`
+      : '';
     bodyHtml = `
-      <div class="organize-summary">建议拆成 ${state.plan.windows.length} 个窗口${scopeNote ? ` · ${scopeNote}` : ''}。勾选的窗口会被新建，并把对应标签移入、按分组归类。</div>
+      <div class="organize-summary">建议拆成 ${state.plan.windows.length} 个窗口${scopeNote ? ` · ${scopeNote}` : ''}。逐条勾选=接受、取消勾选=拒绝；应用只对勾选的标签。</div>
+      ${staleNote}
       ${windowsHtml}
     `;
     footerHtml = `
@@ -3436,24 +4067,21 @@ function showOrganizePanel(state) {
   } else if (state.plan) {
     // 扁平分组模式（自定义提示词回退）
     const existingNames = state.existingNames || [];
-    const groupsHtml = state.plan.groups.map((g, idx) => {
+    const pinnedMergePids = state.pinnedMergePids || {};
+    const staleSet = new Set(state.staleTabIds || []);
+    const staleCount = staleSet.size;
+    const groupsHtml = state.plan.groups.map((g) => {
       const merge = existingNames.includes((g.name || '').trim().toLowerCase());
-      return `
-        <div class="organize-group" data-group-index="${idx}">
-          <label class="organize-group-header">
-            <input type="checkbox" class="organize-group-check" data-group-index="${idx}" checked>
-            ${colorDot(g.color)}
-            <span class="organize-group-name">${escapeHtml(g.name)}</span>
-            ${merge ? '<span class="organize-merge-badge">并入已有</span>' : ''}
-            <span class="organize-group-count">${g.tabIds.length}</span>
-          </label>
-          <div class="organize-group-tabs">${renderOrganizeGroupTabs(g.tabIds)}</div>
-        </div>
-      `;
+      const pid = merge ? (pinnedMergePids[(g.name || '').trim().toLowerCase()] || null) : null;
+      return renderPlanGroupBlock(g, { merge, mergeTargetName: g.name, pinnedPid: pid, staleSet });
     }).join('');
 
+    const staleNote = staleCount
+      ? `<div class="organize-stale-note">⏰ ${staleCount} 个标签 7 天以上未访问；勾选各自的 Archive/Close 才会处理（默认不动）。</div>`
+      : '';
     bodyHtml = `
-      <div class="organize-summary">建议 ${state.plan.groups.length} 个分组${scopeNote ? ` · ${scopeNote}` : ''}。取消勾选可排除某个分组；同一分组跨窗口的标签会在各自窗口分别建组。</div>
+      <div class="organize-summary">建议 ${state.plan.groups.length} 个分组${scopeNote ? ` · ${scopeNote}` : ''}。逐条勾选=接受、取消勾选=拒绝；应用只对勾选的标签。</div>
+      ${staleNote}
       ${groupsHtml}
     `;
     footerHtml = `
@@ -3483,6 +4111,45 @@ function showOrganizePanel(state) {
   const retryBtn = panel.querySelector('.btn-retry-organize');
   if (retryBtn) retryBtn.addEventListener('click', () => { hideOrganizePanel(); startOrganize(state.scope || 'ungrouped'); });
 
+  // ---- per-tab / 组 / 窗口 三级 checkbox 级联（组、窗口作为父级开关）----
+  const refreshParentChecks = () => {
+    panel.querySelectorAll('.organize-group').forEach(groupEl => {
+      const gcheck = groupEl.querySelector('.organize-group-check');
+      if (!gcheck) return;
+      const tabChecks = [...groupEl.querySelectorAll('.organize-tab-check')];
+      if (!tabChecks.length) return;
+      const n = tabChecks.filter(c => c.checked).length;
+      gcheck.checked = n === tabChecks.length;
+      gcheck.indeterminate = n > 0 && n < tabChecks.length;
+    });
+    panel.querySelectorAll('.organize-window').forEach(winEl => {
+      const wcheck = winEl.querySelector('.organize-window-check');
+      if (!wcheck) return;
+      const tabChecks = [...winEl.querySelectorAll('.organize-tab-check')];
+      if (!tabChecks.length) return;
+      const n = tabChecks.filter(c => c.checked).length;
+      wcheck.checked = n === tabChecks.length;
+      wcheck.indeterminate = n > 0 && n < tabChecks.length;
+    });
+  };
+  panel.querySelectorAll('.organize-tab-check').forEach(cb => {
+    cb.addEventListener('change', refreshParentChecks);
+  });
+  panel.querySelectorAll('.organize-group-check').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const groupEl = cb.closest('.organize-group');
+      groupEl.querySelectorAll('.organize-tab-check').forEach(t => { t.checked = cb.checked; });
+      refreshParentChecks();
+    });
+  });
+  panel.querySelectorAll('.organize-window-check').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const winEl = cb.closest('.organize-window');
+      winEl.querySelectorAll('.organize-tab-check').forEach(t => { t.checked = cb.checked; });
+      refreshParentChecks();
+    });
+  });
+
   const applyBtn = panel.querySelector('.btn-apply-organize');
   if (applyBtn) {
     applyBtn.addEventListener('click', async () => {
@@ -3494,42 +4161,102 @@ function showOrganizePanel(state) {
       applyBtn.textContent = '应用中…';
 
       try {
+        // 勾选的标签（接受项）= 应用范围；未勾选 = 拒绝，不动
+        const checkedTabIds = new Set(
+          [...panel.querySelectorAll('.organize-tab-check:checked')]
+            .map(cb => parseInt(cb.dataset.tabId)),
+        );
+
+        // 4C：陈旧标签的显式处理动作（仅勾选的才执行；archive 到常驻组 / close 关闭）
+        // 未勾选任何 stale 动作 = 安全默认，什么都不做。
+        const staleActions = [...panel.querySelectorAll('.organize-stale-action:checked')].map(cb => ({
+          tabId: parseInt(cb.dataset.tabId),
+          action: cb.dataset.staleAction,
+          pid: cb.dataset.archivePid || null,
+        }));
+        const processedIds = new Set();
+        let staleArchived = 0;
+        let staleClosed = 0;
+        let pinnedTouched = false;
+        for (const s of staleActions) {
+          const tab = allTabs.find(t => t.id === s.tabId);
+          if (!tab) continue;
+          if (s.action === 'archive' && s.pid && pinnedGroups[s.pid]) {
+            const rec = pinnedGroups[s.pid];
+            if (!Array.isArray(rec.archivedTabs)) rec.archivedTabs = [];
+            rec.archivedTabs.push(captureArchivedTab(tab));
+            rec.updatedAt = Date.now();
+            pinnedTouched = true;
+            try { await chrome.tabs.remove(tab.id); staleArchived++; processedIds.add(tab.id); }
+            catch (err) { console.error('Failed to archive stale tab:', err); }
+          } else if (s.action === 'close') {
+            try { await chrome.tabs.remove(tab.id); staleClosed++; processedIds.add(tab.id); }
+            catch (err) { console.error('Failed to close stale tab:', err); }
+          }
+        }
+        if (pinnedTouched) await savePinnedGroups();
+
+        // 已被 stale 动作处理掉的标签，不再参与分组
+        const keep = id => checkedTabIds.has(id) && !processedIds.has(id);
+
         // 仅未分组模式启用「自适应并入已有分组」
         const allowMerge = state.scope !== 'all';
         const mergeNote = m => (m ? `、并入 ${m} 个已有分组` : '');
+        const staleNote = () => {
+          const parts = [];
+          if (staleArchived) parts.push(`归档 ${staleArchived} 个陈旧`);
+          if (staleClosed) parts.push(`关闭 ${staleClosed} 个陈旧`);
+          return parts.length ? `；${parts.join('、')}` : '';
+        };
         let toastMsg = '';
         if (plan.mode === 'windows') {
           const selected = [];
-          panel.querySelectorAll('.organize-window-check').forEach(cb => {
-            if (cb.checked) {
-              const idx = parseInt(cb.dataset.windowIndex);
-              if (plan.windows[idx]) selected.push(plan.windows[idx]);
-            }
+          panel.querySelectorAll('.organize-window').forEach(winEl => {
+            const idx = parseInt(winEl.dataset.windowIndex);
+            const w = plan.windows[idx];
+            if (!w) return;
+            const groups = w.groups
+              .map(g => ({ ...g, tabIds: g.tabIds.filter(keep) }))
+              .filter(g => g.tabIds.length >= 1);
+            if (groups.length) selected.push({ ...w, groups });
           });
           if (selected.length === 0) {
-            showToast('未选择任何窗口');
+            if (staleArchived || staleClosed) {
+              hideOrganizePanel();
+              showToast(`已处理陈旧标签${staleNote()}`);
+              return;
+            }
+            showToast('未选择任何标签');
             applyBtn.disabled = false;
             applyBtn.textContent = originalText;
             return;
           }
           const { windowsCreated, groupsCreated, merged } = await applyWindowsPlan(selected, allowMerge);
-          toastMsg = `已整理 ${windowsCreated} 个窗口、新建 ${groupsCreated} 个分组${mergeNote(merged)}`;
+          toastMsg = `已整理 ${windowsCreated} 个窗口、新建 ${groupsCreated} 个分组${mergeNote(merged)}${staleNote()}`;
+          // 全部重新整理：未勾选（含被模型丢弃）的候选标签 → 挪到一个新窗口且不分组
+          if (state.scope === 'all') {
+            const candidateIds = state.candidateIds || [];
+            const leftover = candidateIds.filter(id => !checkedTabIds.has(id) && !processedIds.has(id));
+            const moved = await moveTabsToNewUngroupedWindow(leftover);
+            if (moved > 0) toastMsg += `；${moved} 个未选标签移入新窗口`;
+          }
         } else {
-          const selected = [];
-          panel.querySelectorAll('.organize-group-check').forEach(cb => {
-            if (cb.checked) {
-              const idx = parseInt(cb.dataset.groupIndex);
-              if (plan.groups[idx]) selected.push(plan.groups[idx]);
-            }
-          });
+          const selected = plan.groups
+            .map(g => ({ ...g, tabIds: g.tabIds.filter(keep) }))
+            .filter(g => g.tabIds.length >= 1);
           if (selected.length === 0) {
-            showToast('未选择任何分组');
+            if (staleArchived || staleClosed) {
+              hideOrganizePanel();
+              showToast(`已处理陈旧标签${staleNote()}`);
+              return;
+            }
+            showToast('未选择任何标签');
             applyBtn.disabled = false;
             applyBtn.textContent = originalText;
             return;
           }
           const { created, merged } = await applyGroupsPlan(selected, allowMerge);
-          toastMsg = `新建 ${created} 个分组${mergeNote(merged)}`;
+          toastMsg = `新建 ${created} 个分组${mergeNote(merged)}${staleNote()}`;
         }
         hideOrganizePanel();
         showToast(toastMsg);
@@ -3565,10 +4292,20 @@ async function getExistingGroupsInfo() {
     return groups
       .filter(g => g.title && g.title.trim())
       .map(g => {
-        const domains = [...new Set(
+        const allGroupDomains = [...new Set(
           allTabs.filter(t => t.groupId === g.id).map(t => domainOf(t.url)).filter(Boolean)
-        )].slice(0, 6);
-        return { name: g.title, color: g.color, domains };
+        )];
+        const domains = allGroupDomains.slice(0, 6);
+        // 常驻工作区：带上工作内容描述，供 AI 精准归位
+        const pid = matchPinnedGroup(g, allGroupDomains);
+        const info = { name: g.title, color: g.color, domains };
+        const description = pid && pinnedGroups[pid] ? (pinnedGroups[pid].description || '').trim() : '';
+        if (description) info.description = description;
+        // pinned / pid 仅供 UI（并入去向提示、陈旧归档目标）使用；
+        // buildUserPrompt 只挑 name/domains/purpose，不会把这些字段泄露给模型。
+        info.pinned = !!(pid && pinnedGroups[pid] && pinnedGroups[pid].pinned !== false);
+        info.pid = pid || null;
+        return info;
       });
   } catch (err) {
     console.error('Failed to read existing groups:', err);
@@ -3589,6 +4326,23 @@ async function getExistingGroupsByTitle() {
     console.error('Failed to index existing groups:', err);
   }
   return map;
+}
+
+// 把一批标签挪进一个新建的窗口且不分组（全部重新整理时安置未选中的标签）。
+// 只移动仍存在的标签；返回实际移动的数量。
+async function moveTabsToNewUngroupedWindow(tabIds) {
+  const existing = [];
+  for (const id of tabIds) {
+    try { await chrome.tabs.get(id); existing.push(id); }
+    catch { /* 已被关闭/不存在，跳过 */ }
+  }
+  if (existing.length === 0) return 0;
+  const [first, ...rest] = existing;
+  const win = await chrome.windows.create({ tabId: first });
+  if (rest.length) await chrome.tabs.move(rest, { windowId: win.id, index: -1 });
+  // 移入新窗口后组归属自然失效，再显式 ungroup 兜底确保不分组
+  try { await chrome.tabs.ungroup(existing); } catch { /* 忽略 */ }
+  return existing.length;
 }
 
 // 窗口模式：为每个选中的「窗口」新建浏览器窗口，把标签移入并按分组归类
@@ -3814,8 +4568,78 @@ async function showSettingsPanel() {
       panel.querySelector('#llmPrompt').value = DEFAULT_ORGANIZE_PROMPT;
     });
   }
+
+  // ===== Model 下拉：拉取 / 自定义 =====
+  const modelSelect = panel.querySelector('#llmModel');
+  const modelCustom = panel.querySelector('#llmModelCustom');
+  const modelStatus = panel.querySelector('#llmModelStatus');
+  const CUSTOM_OPT = '__custom__';
+
+  // 选中「自定义…」时展开手动输入框
+  const syncCustomVisibility = () => {
+    modelCustom.style.display = modelSelect.value === CUSTOM_OPT ? '' : 'none';
+  };
+  modelSelect.addEventListener('change', syncCustomVisibility);
+
+  // 用模型列表重建下拉；尽量保留当前选中值，并始终保留「自定义…」项
+  const populateModelSelect = (models) => {
+    const prev = modelSelect.value === CUSTOM_OPT
+      ? (modelCustom.value.trim() || llm.model)
+      : (modelSelect.value || llm.model);
+    modelSelect.innerHTML = '';
+    const ids = new Set();
+    for (const m of models) {
+      if (!m || !m.id || ids.has(m.id)) continue;
+      ids.add(m.id);
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      opt.textContent = m.label || m.id;
+      modelSelect.appendChild(opt);
+    }
+    // 当前配置的 model 不在列表里时，补一个以免丢失
+    if (prev && !ids.has(prev)) {
+      const opt = document.createElement('option');
+      opt.value = prev;
+      opt.textContent = prev;
+      modelSelect.appendChild(opt);
+    }
+    const customOpt = document.createElement('option');
+    customOpt.value = CUSTOM_OPT;
+    customOpt.textContent = '自定义…';
+    modelSelect.appendChild(customOpt);
+    modelSelect.value = prev || DEFAULT_LLM_CONFIG.model;
+    syncCustomVisibility();
+  };
+
+  const doFetchModels = async (silent) => {
+    const baseUrl = panel.querySelector('#llmBaseUrl').value.trim() || DEFAULT_LLM_CONFIG.baseUrl;
+    const apiKey = panel.querySelector('#llmApiKey').value.trim();
+    if (!apiKey) {
+      if (!silent) modelStatus.textContent = '请先填写 API Key';
+      return;
+    }
+    if (!silent) modelStatus.textContent = '拉取中…';
+    try {
+      const models = await fetchModels({ baseUrl, apiKey });
+      populateModelSelect(models);
+      modelStatus.textContent = `已拉取 ${models.length} 个模型`;
+    } catch (err) {
+      if (!silent) modelStatus.textContent = err.message || '拉取失败';
+    }
+  };
+
+  const fetchBtn = panel.querySelector('#llmFetchModels');
+  if (fetchBtn) fetchBtn.addEventListener('click', () => doFetchModels(false));
+
+  // 打开面板时若已配置 Key，自动拉取一次（静默、忽略错误）
+  if (llm.apiKey) doFetchModels(true);
+
   panel.querySelector('.btn-save-llm').addEventListener('click', async () => {
     const promptVal = panel.querySelector('#llmPrompt').value.trim();
+    // model：选「自定义…」时取手动输入框，否则取下拉选中值
+    const modelVal = (modelSelect.value === CUSTOM_OPT
+      ? modelCustom.value.trim()
+      : modelSelect.value.trim()) || DEFAULT_LLM_CONFIG.model;
     const config = {
       baseUrl: panel.querySelector('#llmBaseUrl').value.trim() || DEFAULT_LLM_CONFIG.baseUrl,
       apiKey: panel.querySelector('#llmApiKey').value.trim(),
@@ -3912,73 +4736,3 @@ function setupScrollSync() {
 
 document.addEventListener('DOMContentLoaded', init);
 
-
-  // ===== Model 下拉：拉取 / 自定义 =====
-  const modelSelect = panel.querySelector('#llmModel');
-  const modelCustom = panel.querySelector('#llmModelCustom');
-  const modelStatus = panel.querySelector('#llmModelStatus');
-  const CUSTOM_OPT = '__custom__';
-
-  // 选中「自定义…」时展开手动输入框
-  const syncCustomVisibility = () => {
-    modelCustom.style.display = modelSelect.value === CUSTOM_OPT ? '' : 'none';
-  };
-  modelSelect.addEventListener('change', syncCustomVisibility);
-
-  // 用模型列表重建下拉；尽量保留当前选中值，并始终保留「自定义…」项
-  const populateModelSelect = (models) => {
-    const prev = modelSelect.value === CUSTOM_OPT
-      ? (modelCustom.value.trim() || llm.model)
-      : (modelSelect.value || llm.model);
-    modelSelect.innerHTML = '';
-    const ids = new Set();
-    for (const m of models) {
-      if (!m || !m.id || ids.has(m.id)) continue;
-      ids.add(m.id);
-      const opt = document.createElement('option');
-      opt.value = m.id;
-      opt.textContent = m.label || m.id;
-      modelSelect.appendChild(opt);
-    }
-    // 当前配置的 model 不在列表里时，补一个以免丢失
-    if (prev && !ids.has(prev)) {
-      const opt = document.createElement('option');
-      opt.value = prev;
-      opt.textContent = prev;
-      modelSelect.appendChild(opt);
-    }
-    const customOpt = document.createElement('option');
-    customOpt.value = CUSTOM_OPT;
-    customOpt.textContent = '自定义…';
-    modelSelect.appendChild(customOpt);
-    modelSelect.value = prev || DEFAULT_LLM_CONFIG.model;
-    syncCustomVisibility();
-  };
-
-  const doFetchModels = async (silent) => {
-    const baseUrl = panel.querySelector('#llmBaseUrl').value.trim() || DEFAULT_LLM_CONFIG.baseUrl;
-    const apiKey = panel.querySelector('#llmApiKey').value.trim();
-    if (!apiKey) {
-      if (!silent) modelStatus.textContent = '请先填写 API Key';
-      return;
-    }
-    if (!silent) modelStatus.textContent = '拉取中…';
-    try {
-      const models = await fetchModels({ baseUrl, apiKey });
-      populateModelSelect(models);
-      modelStatus.textContent = `已拉取 ${models.length} 个模型`;
-    } catch (err) {
-      if (!silent) modelStatus.textContent = err.message || '拉取失败';
-    }
-  };
-
-  const fetchBtn = panel.querySelector('#llmFetchModels');
-  if (fetchBtn) fetchBtn.addEventListener('click', () => doFetchModels(false));
-
-  // 打开面板时若已配置 Key，自动拉取一次（静默、忽略错误）
-  if (llm.apiKey) doFetchModels(true);
-
-    // model：选「自定义…」时取手动输入框，否则取下拉选中值
-    const modelVal = (modelSelect.value === CUSTOM_OPT
-      ? modelCustom.value.trim()
-      : modelSelect.value.trim()) || DEFAULT_LLM_CONFIG.model;

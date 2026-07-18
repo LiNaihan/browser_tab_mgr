@@ -31,6 +31,19 @@ export function computeWindowFingerprint(tabs) {
   return hosts.join('|');
 }
 
+/**
+ * 从一个 chrome.tabs.Tab 捕获一条可归档的最小快照（供常驻组 per-tab archive 用）。
+ * 与整窗 Session Archive 的 tab 结构对齐，另记 archivedAt 便于列表排序/展示。
+ */
+export function captureArchivedTab(tab) {
+  return {
+    url: tab?.url || '',
+    title: tab?.title || '',
+    favIconUrl: tab?.favIconUrl || '',
+    archivedAt: Date.now(),
+  };
+}
+
 /** 统计一个会话对象包含的标签总数（含分组内） */
 export function countSessionTabs(session) {
   if (!session || !Array.isArray(session.windows)) return 0;
