@@ -501,6 +501,32 @@ body {
   white-space: nowrap;
 }
 
+.archived-search-discard {
+  flex-shrink: 0;
+  margin-left: 6px;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s, background 0.1s;
+}
+
+.tab-item.archived-search-item:hover .archived-search-discard {
+  opacity: 0.7;
+}
+
+.archived-search-discard:hover {
+  opacity: 1;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+}
+
 .archived-badge {
   margin-left: auto;
   flex-shrink: 0;

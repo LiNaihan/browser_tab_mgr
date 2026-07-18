@@ -876,6 +876,7 @@ function renderArchivedMatches(matches) {
         ${favicon}
         <span class="tab-title">${escapeHtml(t.title || t.url || 'Archived Tab')}</span>
         <span class="archived-badge">Archived · ${escapeHtml(m.groupName)}</span>
+        <button class="archived-search-discard" data-arch-index="${i}" title="Delete from archive">✕</button>
       </div>
     `;
   });
@@ -896,17 +897,27 @@ async function restoreArchivedSearchMatch(idx) {
   const rec = pinnedGroups[pid];
   if (!rec || !Array.isArray(rec.archivedTabs)) return;
 
-  // 找当前会话里该 pid 对应的活分组元素
-  const groupEl = Array.from(document.querySelectorAll('.tab-group[data-pinned]'))
-    .find(el => el.dataset.pinned === pid);
+  // 从 allGroups（不受搜索过滤影响）里找该 pid 对应的活分组，复用重匹配逻辑。
+  // 不能靠已渲染 DOM：搜索时该组若无命中的活 tab 就不会渲染，导致误判「未打开」→ 恢复成游离标签。
+  let targetGroup = null;
+  for (const g of allGroups) {
+    const domains = getGroupDomains(allTabs.filter(t => t.groupId === g.id));
+    if (matchPinnedGroup({ title: g.title, color: g.color }, domains) === pid) {
+      targetGroup = g;
+      break;
+    }
+  }
 
   let restored = false;
-  if (groupEl) {
-    const groupId = parseInt(groupEl.dataset.groupId);
-    const windowSection = groupEl.closest('.window-section');
-    const windowId = windowSection ? parseInt(windowSection.dataset.windowId) : undefined;
-    if (Number.isInteger(groupId) && Number.isInteger(windowId)) {
-      const created = await restoreTabInto(windowId, groupId, tab);
+  if (targetGroup && Number.isInteger(targetGroup.id) && Number.isInteger(targetGroup.windowId)) {
+    // 若该 URL 已在组内开着，直接激活，避免重复打开
+    const live = allTabs.find(t => t.groupId === targetGroup.id && t.url === tab.url);
+    if (live) {
+      await chrome.tabs.update(live.id, { active: true });
+      await chrome.windows.update(targetGroup.windowId, { focused: true });
+      restored = true;
+    } else {
+      const created = await restoreTabInto(targetGroup.windowId, targetGroup.id, tab);
       restored = !!created;
     }
   }
@@ -923,11 +934,52 @@ async function restoreArchivedSearchMatch(idx) {
     return;
   }
 
-  // 从归档记录里移除该条并持久化
+  // 恢复后从「当前归档列表」移除（不再被搜到），但保留 stickyUrls 标记：
+  // 之后关掉(✕)会因 sticky 再次回到 archive；彻底删除需在 archive 里点 ✕。
   const pos = rec.archivedTabs.indexOf(tab);
   if (pos !== -1) rec.archivedTabs.splice(pos, 1);
   await savePinnedGroups();
   await loadTabs();
+}
+
+// 从归档删除一条搜索命中项（不恢复），用于清掉不想要/无法恢复的归档
+async function discardArchivedSearchMatch(idx) {
+  const match = archivedSearchMatches[idx];
+  if (!match) return;
+  const { pid, tab } = match;
+  const rec = pinnedGroups[pid];
+  if (!rec || !Array.isArray(rec.archivedTabs)) return;
+  const pos = rec.archivedTabs.indexOf(tab);
+  if (pos !== -1) rec.archivedTabs.splice(pos, 1);
+  // 彻底删除：同时清掉 sticky 标记，之后关闭该 URL 不再回到 archive
+  if (Array.isArray(rec.stickyUrls)) {
+    rec.stickyUrls = rec.stickyUrls.filter(u => u !== tab.url);
+  }
+  await savePinnedGroups();
+  await loadTabs();
+}
+
+// 关闭常驻组内 tab 的统一入口：曾经 Archive 过（在 stickyUrls）的回到 archive，其余正常关
+async function closeTabWithArchive(tabId) {
+  const tab = allTabs.find(t => t.id === tabId);
+  if (tab && tab.groupId && tab.groupId !== -1) {
+    const g = allGroups.find(x => x.id === tab.groupId);
+    const domains = getGroupDomains(allTabs.filter(t => t.groupId === tab.groupId));
+    const pid = g ? matchPinnedGroup({ title: g.title, color: g.color }, domains) : null;
+    if (pid && pinnedGroups[pid]) {
+      const rec = pinnedGroups[pid];
+      const sticky = Array.isArray(rec.stickyUrls) && rec.stickyUrls.includes(tab.url);
+      if (sticky) {
+        if (!Array.isArray(rec.archivedTabs)) rec.archivedTabs = [];
+        if (!rec.archivedTabs.some(a => a.url === tab.url)) {
+          rec.archivedTabs.push(captureArchivedTab(tab));
+        }
+        rec.updatedAt = Date.now();
+        await savePinnedGroups();
+      }
+    }
+  }
+  await chrome.tabs.remove(tabId);
 }
 
 function groupTabsByWindow(tabs) {
@@ -1326,6 +1378,15 @@ function showDescriptionEditor(groupName, initialValue = '') {
 }
 
 function handleTabListClick(e) {
+  // 归档搜索项的 ✕：从归档删除（不恢复）；须在 restore 拦截之前判断
+  const discardBtn = e.target.closest('.archived-search-discard');
+  if (discardBtn) {
+    e.stopPropagation();
+    const idx = parseInt(discardBtn.dataset.archIndex);
+    if (Number.isInteger(idx)) discardArchivedSearchMatch(idx);
+    return;
+  }
+
   // 搜索命中的归档标签：点击即恢复（需在通用 tab-item 处理之前拦截）
   const archItem = e.target.closest('.archived-search-item');
   if (archItem) {
@@ -1342,12 +1403,12 @@ function handleTabListClick(e) {
     if (closeBtn) {
       e.stopPropagation();
       const tabId = parseInt(closeBtn.dataset.tabId);
-      chrome.tabs.remove(tabId);
+      closeTabWithArchive(tabId);
       selectedTabIds.delete(tabId);
       renderTabList();
       return;
     }
-    
+
     // 其他任何点击都只清除选择
     selectedTabIds.clear();
     lastSelectedTabId = null;
@@ -1360,7 +1421,7 @@ function handleTabListClick(e) {
   if (closeBtn) {
     e.stopPropagation();
     const tabId = parseInt(closeBtn.dataset.tabId);
-    chrome.tabs.remove(tabId);
+    closeTabWithArchive(tabId);
     selectedTabIds.delete(tabId);
     return;
   }
@@ -2400,13 +2461,16 @@ function showGroupArchivedSubmenu(parentItem, pid, groupId, windowId) {
   submenu.style.top = `${Math.min(parentRect.top, window.innerHeight - 300)}px`;
 
   submenu.addEventListener('click', async (e) => {
-    // ✕ 丢弃：不恢复，仅从 archivedTabs 移除
+    // ✕ 丢弃：彻底删除，从 archivedTabs 移除并清 sticky 标记
     const discard = e.target.closest('[data-action="discard-archived"]');
     if (discard) {
       e.stopPropagation();
       const idx = parseInt(discard.dataset.idx);
       if (Array.isArray(rec.archivedTabs) && idx >= 0 && idx < rec.archivedTabs.length) {
-        rec.archivedTabs.splice(idx, 1);
+        const [removed] = rec.archivedTabs.splice(idx, 1);
+        if (removed && Array.isArray(rec.stickyUrls)) {
+          rec.stickyUrls = rec.stickyUrls.filter(u => u !== removed.url);
+        }
         rec.updatedAt = Date.now();
         await savePinnedGroups();
       }
@@ -2415,18 +2479,25 @@ function showGroupArchivedSubmenu(parentItem, pid, groupId, windowId) {
       return;
     }
 
-    // 点击行：恢复该 tab 回本组，并从 archivedTabs 移除
+    // 点击行：恢复该 tab 回本组，并从当前归档列表移除（保留 sticky，关掉会回到 archive）。
     const item = e.target.closest('[data-action="restore-archived"]');
     if (!item) return;
     const idx = parseInt(item.dataset.idx);
     const at = rec.archivedTabs?.[idx];
     if (!at) return;
     hideContextMenu();
-    await restoreTabInto(windowId, groupId, at);
+    // 若该 URL 已在组内开着，激活即可，避免重复打开
+    const live = allTabs.find(t => t.groupId === groupId && t.url === at.url);
+    if (live) {
+      await chrome.tabs.update(live.id, { active: true });
+      await chrome.windows.update(windowId, { focused: true });
+    } else {
+      await restoreTabInto(windowId, groupId, at);
+    }
     rec.archivedTabs.splice(idx, 1);
     rec.updatedAt = Date.now();
     await savePinnedGroups();
-    renderTabList();
+    await loadTabs();
   });
 
   // 鼠标离开逻辑（悬停回父项则保留）
@@ -2550,7 +2621,13 @@ function showContextMenu(x, y, tab) {
         if (pinnedPid && pinnedGroups[pinnedPid]) {
           const rec = pinnedGroups[pinnedPid];
           if (!Array.isArray(rec.archivedTabs)) rec.archivedTabs = [];
-          rec.archivedTabs.push(captureArchivedTab(tab));
+          if (!Array.isArray(rec.stickyUrls)) rec.stickyUrls = [];
+          // 标记该 URL 为「曾经 Archive 过」：以后关掉会自动回到 archive
+          if (!rec.stickyUrls.includes(tab.url)) rec.stickyUrls.push(tab.url);
+          // 按 URL 去重：同一 URL 已在归档里就不再追加，避免反复关闭堆积重复项
+          if (!rec.archivedTabs.some(a => a.url === tab.url)) {
+            rec.archivedTabs.push(captureArchivedTab(tab));
+          }
           rec.updatedAt = Date.now();
           await savePinnedGroups();
           try {
