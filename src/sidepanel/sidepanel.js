@@ -4035,7 +4035,7 @@ async function startOrganize(scope = 'ungrouped') {
     }
 
     if (!usable) {
-      showOrganizePanel({ empty: true, raw: plan.raw, ...meta });
+      showOrganizePanel({ empty: true, raw: plan.raw, staleTabIds, ...meta });
       return;
     }
     showOrganizePanel({ plan, existingNames, pinnedMergePids, staleTabIds, ...meta });
@@ -4051,6 +4051,7 @@ async function startOrganize(scope = 'ungrouped') {
 function renderOrganizeGroupTabs(tabIds, opts = {}) {
   const staleSet = opts.staleSet;
   const stalePinnedPid = opts.stalePinnedPid || null;
+  const cleanup = !!opts.cleanup; // 清理模式：无分组去向，隐藏「移动」勾选框，只留 ✕ / stale 动作
   return tabIds.map(id => {
     const tab = allTabs.find(t => t.id === id);
     if (!tab) return '';
@@ -4076,12 +4077,16 @@ function renderOrganizeGroupTabs(tabIds, opts = {}) {
           </label>`;
       }
     }
+    const moveCheck = cleanup
+      ? ''
+      : `<input type="checkbox" class="organize-tab-check" data-tab-id="${id}" checked>`;
     return `
-      <div class="organize-tab${isStale ? ' is-stale' : ''}">
-        <input type="checkbox" class="organize-tab-check" data-tab-id="${id}" checked>
+      <div class="organize-tab${isStale ? ' is-stale' : ''}" data-tab-id="${id}">
+        ${moveCheck}
         ${favicon}
         <span class="organize-tab-title" title="${escapeHtml(tab.title)}">${escapeHtml(tab.title || 'New Tab')}</span>
         ${staleHtml}
+        <button class="organize-tab-close" data-tab-id="${id}" title="标记关闭此标签（应用时关闭；再点取消）">✕</button>
       </div>
     `;
   }).join('');
@@ -4176,9 +4181,26 @@ function showOrganizePanel(state) {
     const rawHint = state.raw
       ? `<div class="organize-raw"><div class="organize-raw-label">模型原始返回：</div><pre>${escapeHtml(state.raw)}</pre></div>`
       : '';
-    bodyHtml = `<div class="organize-status">模型没有给出可用的分组。<br><span class="organize-subtle">${scopeNote}</span>${rawHint}</div>`;
-    footerHtml = `<button class="btn-cancel-organize">关闭</button>
-                  <button class="btn-retry-organize">重试</button>`;
+    // 没生成可用分组（常见于标签太少/太杂），但仍让用户就地清理这些候选标签：
+    // ✕ 关闭 + 陈旧 Archive/Close，走同一套 apply（空 plan → 只执行副作用，不建组）。
+    const ids = state.candidateIds || [];
+    const staleSet = new Set(state.staleTabIds || []);
+    const cleanupList = ids.length
+      ? `<div class="organize-group-tabs">${renderOrganizeGroupTabs(ids, { staleSet, stalePinnedPid: null, cleanup: true })}</div>`
+      : '';
+    bodyHtml = `
+      <div class="organize-status">未生成分组建议（标签太少或太杂）。<br><span class="organize-subtle">${scopeNote}</span></div>
+      ${ids.length ? `<div class="organize-summary">可在此就地清理：点 ✕ 关闭标签${staleSet.size ? '，或勾选陈旧标签的处理动作' : ''}（不会移动/建组）。</div>` : ''}
+      ${cleanupList}
+      ${rawHint}`;
+    footerHtml = ids.length
+      ? `<button class="btn-cancel-organize">关闭</button>
+         <button class="btn-retry-organize">重试</button>
+         <button class="btn-apply-organize">应用</button>`
+      : `<button class="btn-cancel-organize">关闭</button>
+         <button class="btn-retry-organize">重试</button>`;
+    // 空 plan：apply 管线只跑 stale/close 副作用，不会建任何组
+    if (ids.length) state.plan = { mode: 'groups', groups: [] };
   } else if (state.plan && state.plan.mode === 'windows') {
     const existingNames = state.existingNames || [];
     const pinnedMergePids = state.pinnedMergePids || {};
@@ -4311,6 +4333,26 @@ function showOrganizePanel(state) {
     });
   });
 
+  // per-tab 关闭标记：点 ✕ 切换「应用时关闭」状态，标记后禁用移动 checkbox（不能既移又关）
+  panel.querySelectorAll('.organize-tab-close').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('.organize-tab');
+      if (!row) return;
+      const marked = row.classList.toggle('marked-close');
+      const moveCheck = row.querySelector('.organize-tab-check');
+      if (moveCheck) {
+        moveCheck.checked = !marked && moveCheck.checked;
+        moveCheck.disabled = marked;
+      }
+      // 标记关闭时，若该行有 stale 动作也取消勾选，避免重复处理
+      row.querySelectorAll('.organize-stale-action').forEach(sa => {
+        if (marked) sa.checked = false;
+        sa.disabled = marked;
+      });
+      refreshParentChecks();
+    });
+  });
+
   const applyBtn = panel.querySelector('.btn-apply-organize');
   if (applyBtn) {
     applyBtn.addEventListener('click', async () => {
@@ -4361,7 +4403,17 @@ function showOrganizePanel(state) {
         }
         if (pinnedTouched) await savePinnedGroups();
 
-        // 已被 stale 动作处理掉的标签，不再参与分组
+        // per-tab ✕ 标记关闭：走 closeTabWithArchive（常驻组曾归档过的会回归档，否则普通关闭）
+        const closeMarkedIds = [...panel.querySelectorAll('.organize-tab.marked-close')]
+          .map(el => parseInt(el.dataset.tabId))
+          .filter(id => !Number.isNaN(id) && !processedIds.has(id));
+        let userClosed = 0;
+        for (const id of closeMarkedIds) {
+          try { await closeTabWithArchive(id); userClosed++; processedIds.add(id); }
+          catch (err) { console.error('Failed to close marked tab:', err); }
+        }
+
+        // 已被 stale 动作 / ✕ 关闭处理掉的标签，不再参与分组
         const keep = id => checkedTabIds.has(id) && !processedIds.has(id);
 
         // 仅未分组模式启用「自适应并入已有分组」
@@ -4371,8 +4423,10 @@ function showOrganizePanel(state) {
           const parts = [];
           if (staleArchived) parts.push(`归档 ${staleArchived} 个陈旧`);
           if (staleClosed) parts.push(`关闭 ${staleClosed} 个陈旧`);
+          if (userClosed) parts.push(`关闭 ${userClosed} 个标签`);
           return parts.length ? `；${parts.join('、')}` : '';
         };
+        const didSideEffects = () => staleArchived || staleClosed || userClosed;
         let toastMsg = '';
         if (plan.mode === 'windows') {
           const selected = [];
@@ -4386,9 +4440,9 @@ function showOrganizePanel(state) {
             if (groups.length) selected.push({ ...w, groups });
           });
           if (selected.length === 0) {
-            if (staleArchived || staleClosed) {
+            if (didSideEffects()) {
               hideOrganizePanel();
-              showToast(`已处理陈旧标签${staleNote()}`);
+              showToast(`已处理标签${staleNote()}`);
               return;
             }
             showToast('未选择任何标签');
@@ -4410,9 +4464,9 @@ function showOrganizePanel(state) {
             .map(g => ({ ...g, tabIds: g.tabIds.filter(keep) }))
             .filter(g => g.tabIds.length >= 1);
           if (selected.length === 0) {
-            if (staleArchived || staleClosed) {
+            if (didSideEffects()) {
               hideOrganizePanel();
-              showToast(`已处理陈旧标签${staleNote()}`);
+              showToast(`已处理标签${staleNote()}`);
               return;
             }
             showToast('未选择任何标签');

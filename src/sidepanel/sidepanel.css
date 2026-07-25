@@ -1748,6 +1748,34 @@ body {
   color: var(--text-primary);
 }
 
+/* per-tab 关闭 ✕ 按钮（应用时关闭该标签） */
+.organize-tab-close {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.5;
+}
+.organize-tab-close:hover {
+  opacity: 1;
+  background: rgba(234, 67, 53, 0.15);
+  color: #ea4335;
+}
+/* 已标记关闭：整行减淡 + 删除线，✕ 变红常亮 */
+.organize-tab.marked-close .organize-tab-title {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+.organize-tab.marked-close .organize-tab-close {
+  opacity: 1;
+  color: #ea4335;
+}
+
 /* 并入常驻工作区：更醒目的去向提示 */
 .organize-merge-badge.pinned {
   background: var(--group-green, #34a853);
