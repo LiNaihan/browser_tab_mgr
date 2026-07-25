@@ -28,6 +28,10 @@ let windowNames = {}; // 自定义窗口名称
 let windowOrder = []; // 窗口排序顺序
 let collapsedWindows = new Set(); // 折叠的窗口 ID
 let collapsedGroups = new Set(); // 折叠的分组 ID
+// 已关闭但可能仍残留在 tabs.query 结果里的窗口 id（Chrome 关窗时 onRemoved 与
+// query 有竞态：事件已到但 query 仍返回死窗口的 tab）。渲染时强制过滤掉，
+// 保证在其他窗口的侧边栏里立刻消失，而不用等切窗触发下一次重载。窗口 id 同会话内不复用，安全。
+let closedWindowIds = new Set();
 let searchQuery = '';
 let draggedTab = null;
 let draggedWindow = null; // 拖拽中的窗口
@@ -986,6 +990,7 @@ function groupTabsByWindow(tabs) {
   const map = new Map();
   
   for (const tab of tabs) {
+    if (closedWindowIds.has(tab.windowId)) continue; // 跳过正在关闭的窗口残留 tab
     if (!map.has(tab.windowId)) {
       map.set(tab.windowId, []);
     }
@@ -3044,6 +3049,8 @@ function listenToTabChanges() {
   
   // 窗口关闭时清理顺序
   chrome.windows.onRemoved.addListener(async (windowId) => {
+    // 立刻标记为已关闭，渲染时过滤掉（绕过 query 竞态，其他窗口侧边栏即时消失）
+    closedWindowIds.add(windowId);
     // 从顺序列表中移除
     const index = windowOrder.indexOf(windowId);
     if (index !== -1) {
@@ -3055,6 +3062,13 @@ function listenToTabChanges() {
       delete windowNames[windowId];
       await chrome.storage.local.set({ windowNames });
     }
+    loadTabs();
+  });
+
+  // 窗口获得焦点时重载：非聚焦侧边栏可能被节流/冻结、错过了实时事件，
+  // 切窗回来做一次干净的重新查询兜底（此时 query 已不含死窗口）。
+  chrome.windows.onFocusChanged.addListener((windowId) => {
+    if (windowId === chrome.windows.WINDOW_ID_NONE) return;
     loadTabs();
   });
 }
