@@ -32,6 +32,10 @@ let collapsedGroups = new Set(); // 折叠的分组 ID
 // query 有竞态：事件已到但 query 仍返回死窗口的 tab）。渲染时强制过滤掉，
 // 保证在其他窗口的侧边栏里立刻消失，而不用等切窗触发下一次重载。窗口 id 同会话内不复用，安全。
 let closedWindowIds = new Set();
+// 「定位当前标签」目标：置位后由 renderTabList 在下一次(及紧随的)重渲染末尾滚动过去。
+// 必须走这条路而非在点击处理里直接滚——展开分组会 chrome.tabGroups.update →
+// onUpdated → loadTabs 异步重建 DOM，直接滚会被这次重渲染覆盖。
+let pendingLocateTabId = null;
 let searchQuery = '';
 let draggedTab = null;
 let draggedWindow = null; // 拖拽中的窗口
@@ -647,6 +651,22 @@ function renderTabList() {
   
   // 绑定 favicon 错误处理
   bindFaviconErrorHandlers();
+
+  // 有待定位目标则滚过去（在 DOM 与 scrollTop 恢复之后）。用 scrollTop 覆盖上面
+  // 恢复的旧值，保证紧随的重渲染 save/restore 会把这个新位置带过去、不回弹。
+  if (pendingLocateTabId !== null) {
+    const target = elements.tabList.querySelector(`.tab-item[data-tab-id="${pendingLocateTabId}"]`);
+    if (target) {
+      target.scrollIntoView({ block: 'center' });
+      target.style.transition = 'none';
+      target.style.background = 'rgba(76, 175, 80, 0.5)';
+      setTimeout(() => {
+        target.style.transition = 'background 0.5s';
+        target.style.background = '';
+      }, 100);
+      pendingLocateTabId = null;
+    }
+  }
 }
 
 function bindFaviconErrorHandlers() {
@@ -1070,42 +1090,21 @@ function bindEvents() {
     try {
       const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!currentTab) return;
-      
-      // 确保当前窗口和 group 展开
-      const windowSection = document.querySelector(`.window-section[data-window-id="${currentTab.windowId}"]`);
-      if (windowSection) {
-        windowSection.classList.remove('collapsed');
-        collapsedWindows.delete(currentTab.windowId);
-        const collapseIcon = windowSection.querySelector('.window-collapse-icon');
-        if (collapseIcon) collapseIcon.textContent = '▼';
-      }
-      
+
+      // 在内存状态里展开当前窗口与所在分组；分组还要同步展开 Chrome 原生分组，
+      // 否则下一次 loadTabs 会按原生折叠态把它重新加回 collapsedGroups。
+      collapsedWindows.delete(currentTab.windowId);
       if (currentTab.groupId !== -1) {
-        const tabGroup = document.querySelector(`.tab-group[data-group-id="${currentTab.groupId}"]`);
-        if (tabGroup) {
-          tabGroup.classList.remove('collapsed');
-          collapsedGroups.delete(currentTab.groupId);
-          // 同步到 Chrome 原生 tab group
-          chrome.tabGroups.update(currentTab.groupId, { collapsed: false }).catch(err => {
-            console.error('Failed to expand group:', err);
-          });
-        }
+        collapsedGroups.delete(currentTab.groupId);
+        try { await chrome.tabGroups.update(currentTab.groupId, { collapsed: false }); }
+        catch (err) { console.error('Failed to expand group:', err); }
       }
-      
       await saveCollapsedState();
-      
-      // 滚动到当前 tab
-      const tabItem = document.querySelector(`.tab-item[data-tab-id="${currentTab.id}"]`);
-      if (tabItem) {
-        tabItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        // 闪烁提示
-        tabItem.style.transition = 'none';
-        tabItem.style.background = 'rgba(76, 175, 80, 0.5)';
-        setTimeout(() => {
-          tabItem.style.transition = 'background 0.5s';
-          tabItem.style.background = '';
-        }, 100);
-      }
+
+      // 交给 renderTabList 在重渲染末尾滚动；置位后主动重渲染一次（原生展开触发的
+      // onUpdated→loadTabs 也会命中同一目标，谁最后渲染谁负责滚，互不覆盖）。
+      pendingLocateTabId = currentTab.id;
+      await loadTabs();
     } catch (error) {
       console.error('Failed to locate current tab:', error);
     }
