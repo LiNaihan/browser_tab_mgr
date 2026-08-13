@@ -64,6 +64,24 @@ function normalizeBaseUrl(baseUrl) {
   return raw;
 }
 
+/**
+ * 发一次 chat/completions。jsonMode=true 时带 response_format:json_object。
+ * 不发 temperature：部分模型（如 claude-opus-4-8）已废弃该参数，带上会 400。
+ * @returns {Promise<Response>} fetch 的原始响应（调用方负责判 ok/读体）
+ */
+function postChat(endpoint, cfg, messages, jsonMode) {
+  const body = { model: cfg.model, messages };
+  if (jsonMode) body.response_format = { type: 'json_object' };
+  return fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${cfg.apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 function buildUserPrompt(tabs, existingGroups = []) {
   const tabsInfo = tabs.map(tab => ({
     id: tab.id,
@@ -197,26 +215,19 @@ export async function analyzeTabs(tabs, config, existingGroups = []) {
 
   const systemPrompt = (cfg.prompt && cfg.prompt.trim()) ? cfg.prompt : DEFAULT_ORGANIZE_PROMPT;
   const endpoint = `${normalizeBaseUrl(cfg.baseUrl)}/chat/completions`;
-  const body = {
-    // 不发 temperature：部分模型（如 claude-opus-4-8）已废弃该参数，带上会 400。
-    model: cfg.model,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: buildUserPrompt(tabs, existingGroups) },
-    ],
-    response_format: { type: 'json_object' },
-  };
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: buildUserPrompt(tabs, existingGroups) },
+  ];
 
   let resp;
   try {
-    resp = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${cfg.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    // 先带 response_format:json_object 请求；若网关因该字段按请求格式路由不到 provider
+    // 而 400（protocol_mismatch），去掉它重试一次——prompt 已要求输出 JSON，extractJson 也能兜。
+    resp = await postChat(endpoint, cfg, messages, true);
+    if (resp.status === 400) {
+      resp = await postChat(endpoint, cfg, messages, false).catch(() => resp);
+    }
   } catch (err) {
     throw new Error(`无法连接到 LLM 服务：${err.message}`);
   }
@@ -320,26 +331,17 @@ export async function summarizeGroups(groups, config) {
   );
 
   const endpoint = `${normalizeBaseUrl(cfg.baseUrl)}/chat/completions`;
-  const body = {
-    // 同上：不发 temperature，避免对已废弃该参数的模型 400。
-    model: cfg.model,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ],
-    response_format: { type: 'json_object' },
-  };
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: userPrompt },
+  ];
 
   let resp;
   try {
-    resp = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${cfg.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    resp = await postChat(endpoint, cfg, messages, true);
+    if (resp.status === 400) {
+      resp = await postChat(endpoint, cfg, messages, false).catch(() => resp);
+    }
   } catch (err) {
     console.error('[LLM] summarizeGroups fetch failed:', err);
     return [];
