@@ -82,6 +82,85 @@ function postChat(endpoint, cfg, messages, jsonMode) {
   });
 }
 
+/** 模型名以 claude 开头 → 该走 Anthropic Messages 格式（而非 OpenAI chat/completions） */
+function isAnthropicModel(model) {
+  return /^claude/i.test(model || '');
+}
+
+/**
+ * 发一次 Anthropic Messages 请求（/messages）。system 独立字段，messages 只放 user。
+ * 网关（如 gateway-claude-api）只认这套格式，发 OpenAI 格式会 400 protocol_mismatch。
+ */
+function postAnthropic(base, cfg, systemPrompt, userContent) {
+  const body = {
+    model: cfg.model,
+    max_tokens: 4096,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: userContent }],
+  };
+  return fetch(`${base}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': cfg.apiKey,
+      'anthropic-version': '2023-06-01',
+      // 允许从浏览器直接调用（SDK 风格网关会校验此头，非 Anthropic 网关忽略即可）
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * 统一补全入口：屏蔽 OpenAI / Anthropic 两种请求-响应格式差异。
+ * claude* 模型走 Anthropic Messages，其余走 OpenAI chat/completions（并保留 400 去 response_format 重试）。
+ * @returns {Promise<{ok:boolean,status:number,content:string,detail:string}>}（网络错误照常 throw，交调用方兜）
+ */
+async function complete(cfg, systemPrompt, userContent, jsonMode) {
+  const base = normalizeBaseUrl(cfg.baseUrl);
+  const anthropic = isAnthropicModel(cfg.model);
+  let resp;
+  if (anthropic) {
+    resp = await postAnthropic(base, cfg, systemPrompt, userContent);
+  } else {
+    const endpoint = `${base}/chat/completions`;
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent },
+    ];
+    resp = await postChat(endpoint, cfg, messages, jsonMode);
+    if (resp.status === 400) {
+      resp = await postChat(endpoint, cfg, messages, false).catch(() => resp);
+    }
+  }
+
+  if (!resp.ok) {
+    let detail = '';
+    try {
+      const errJson = await resp.json();
+      detail = errJson?.error?.message || JSON.stringify(errJson);
+    } catch {
+      detail = await resp.text().catch(() => '');
+    }
+    return { ok: false, status: resp.status, content: '', detail };
+  }
+
+  let content = '';
+  try {
+    const data = await resp.json();
+    if (anthropic) {
+      content = Array.isArray(data?.content)
+        ? data.content.filter(b => b?.type === 'text').map(b => b.text).join('')
+        : '';
+    } else {
+      content = data?.choices?.[0]?.message?.content || '';
+    }
+  } catch {
+    return { ok: false, status: resp.status, content: '', detail: '响应解析失败' };
+  }
+  return { ok: true, status: resp.status, content, detail: '' };
+}
+
 function buildUserPrompt(tabs, existingGroups = []) {
   const tabsInfo = tabs.map(tab => ({
     id: tab.id,
@@ -214,37 +293,19 @@ export async function analyzeTabs(tabs, config, existingGroups = []) {
   if (!tabs || tabs.length === 0) throw new Error('没有可整理的标签页。');
 
   const systemPrompt = (cfg.prompt && cfg.prompt.trim()) ? cfg.prompt : DEFAULT_ORGANIZE_PROMPT;
-  const endpoint = `${normalizeBaseUrl(cfg.baseUrl)}/chat/completions`;
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: buildUserPrompt(tabs, existingGroups) },
-  ];
 
-  let resp;
+  let res;
   try {
-    // 先带 response_format:json_object 请求；若网关因该字段按请求格式路由不到 provider
-    // 而 400（protocol_mismatch），去掉它重试一次——prompt 已要求输出 JSON，extractJson 也能兜。
-    resp = await postChat(endpoint, cfg, messages, true);
-    if (resp.status === 400) {
-      resp = await postChat(endpoint, cfg, messages, false).catch(() => resp);
-    }
+    res = await complete(cfg, systemPrompt, buildUserPrompt(tabs, existingGroups), true);
   } catch (err) {
     throw new Error(`无法连接到 LLM 服务：${err.message}`);
   }
 
-  if (!resp.ok) {
-    let detail = '';
-    try {
-      const errJson = await resp.json();
-      detail = errJson?.error?.message || JSON.stringify(errJson);
-    } catch {
-      detail = await resp.text().catch(() => '');
-    }
-    throw new Error(`LLM 请求失败 (${resp.status}): ${detail || resp.statusText}`);
+  if (!res.ok) {
+    throw new Error(`LLM 请求失败 (${res.status}): ${res.detail || '未知错误'}`);
   }
 
-  const data = await resp.json();
-  const content = data?.choices?.[0]?.message?.content;
+  const content = res.content;
   if (!content) throw new Error('模型未返回有效内容。');
 
   console.log('[LLM] raw response:', content);
@@ -272,7 +333,10 @@ export async function fetchModels(config) {
     resp = await fetch(endpoint, {
       method: 'GET',
       headers: {
+        // 同时带两套鉴权：OpenAI 网关认 Bearer，Anthropic 网关认 x-api-key + anthropic-version。
         Authorization: `Bearer ${cfg.apiKey}`,
+        'x-api-key': cfg.apiKey,
+        'anthropic-version': '2023-06-01',
       },
     });
   } catch (err) {
@@ -330,34 +394,19 @@ export async function summarizeGroups(groups, config) {
     2,
   );
 
-  const endpoint = `${normalizeBaseUrl(cfg.baseUrl)}/chat/completions`;
-  const messages = [
-    { role: 'system', content: systemPrompt },
-    { role: 'user', content: userPrompt },
-  ];
-
-  let resp;
+  let res;
   try {
-    resp = await postChat(endpoint, cfg, messages, true);
-    if (resp.status === 400) {
-      resp = await postChat(endpoint, cfg, messages, false).catch(() => resp);
-    }
+    res = await complete(cfg, systemPrompt, userPrompt, true);
   } catch (err) {
     console.error('[LLM] summarizeGroups fetch failed:', err);
     return [];
   }
-  if (!resp.ok) {
-    console.error('[LLM] summarizeGroups HTTP', resp.status);
+  if (!res.ok) {
+    console.error('[LLM] summarizeGroups HTTP', res.status, res.detail);
     return [];
   }
 
-  let content;
-  try {
-    const data = await resp.json();
-    content = data?.choices?.[0]?.message?.content;
-  } catch {
-    return [];
-  }
+  const content = res.content;
   if (!content) return [];
 
   let parsed;
